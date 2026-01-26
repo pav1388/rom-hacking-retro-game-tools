@@ -1,0 +1,22 @@
+# Основные зависимости для DEST
+# Версии указаны приблизительно, можно использовать последние стабильные
+
+# Основные библиотеки
+chardet>=4.0.0      # Для автоопределения кодировок
+psutil>=5.9.0       # Для отладочной информации о памяти (опционально)
+
+# Установка:
+# pip install -r requirements.txt
+#
+# Для установки всех зависимостей (включая опциональные):
+# pip install chardet psutil
+
+# Примечание: Tkinter обычно входит в стандартную поставку Python
+# Если Tkinter отсутствует, установите:
+# Windows: обычно включен в установщик Python
+# Linux (Ubuntu/Debian): sudo apt-get install python3-tk
+# Linux (Fedora): sudo dnf install python3-tkinter
+# macOS: обычно включен
+
+# Для сборки в EXE:
+# pip install pyinstaller
