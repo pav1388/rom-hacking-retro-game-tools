@@ -13,8 +13,7 @@ if sys.version_info < (3, 6):
             "Этот инструмент требует Python 3.6 или новее.\n"
             f"Ваша версия: {sys.version}\n\n"
             "Скачайте последнюю версию Python с:\n"
-            "https://www.python.org/downloads/"
-        )
+            "https://www.python.org/downloads/")
         root.destroy()
     except Exception:
         print("Ошибка: требуется Python 3.6 или новее.", file=sys.stderr)
@@ -35,11 +34,70 @@ import tempfile
 import argparse
 import subprocess
 
-MAIN_VERSION = '0.6'
-MAIN_DATE = '7.1.2025'
+MAIN_VERSION = '0.8'
+MAIN_DATE = '9.1.2025'
 MAIN_TITLE = f"Front Mission 4 (PS2) Data Rebuilder v{MAIN_VERSION} /{MAIN_DATE}/ by pav13"
 
 
+class MappingTrieNode:
+    __slots__ = ('children', 'replacement', 'mode')
+    
+    def __init__(self):
+        self.children = None
+        self.replacement = None
+        self.mode = 0
+    
+    def get_child(self, byte):
+        if self.children is None:
+            return None
+        return self.children.get(byte)
+    
+    def add_child(self, byte):
+        if self.children is None:
+            self.children = {}
+        if byte not in self.children:
+            self.children[byte] = MappingTrieNode()
+        return self.children[byte]
+
+class MappingTrie:
+    __slots__ = ('root', 'max_depth')
+    
+    def __init__(self):
+        self.root = MappingTrieNode()
+        self.max_depth = 0
+    
+    def insert(self, key_bytes, replacement, mode):
+        node = self.root
+        depth = 0
+        for b in key_bytes:
+            node = node.add_child(b)
+            depth += 1
+        node.replacement = replacement
+        node.mode = mode
+        if depth > self.max_depth:
+            self.max_depth = depth
+    
+    def find_longest_match(self, data, start_pos):
+        node = self.root
+        matched_len = 0
+        last_replacement = None
+        last_mode = 0
+        max_pos = min(start_pos + self.max_depth, len(data))
+        for i in range(start_pos, max_pos):
+            byte = data[i]
+            next_node = node.get_child(byte)
+            if next_node is None:
+                break
+            node = next_node
+            if node.replacement is not None:
+                matched_len = i - start_pos + 1
+                last_replacement = node.replacement
+                last_mode = node.mode
+        if matched_len > 0:
+            return matched_len, last_replacement, last_mode
+        return 0, None, 0
+        
+        
 class TextContextMenu:
     def __init__(self, root, on_change_callback=None):
         self.root = root
@@ -131,12 +189,40 @@ class ChunkParser:
                 self.alph_reverse[char] = bytes([int(repl, 16)])
             else:
                 self.alph_reverse[char] = repl.encode("utf-8")
+        self.trie_01ff = MappingTrie()
+        self.trie_02ff = MappingTrie()
+        self._build_tries()
         self.jis0208 = self.load_jis0208_index() if use_jis0208 else None
         self.jis0208_cp_to_ptr = self._build_jis0208_reverse_index()
-        self.sorted_keys = {
-            "01ff": sorted(self.mappings["01ff"].keys(), key=lambda x: -len(x)),
-            "02ff": sorted(self.mappings["02ff"].keys(), key=lambda x: -len(x)),
-        }
+        self._encode_cache = {}
+        self._token_index_built = False
+        self._markers_cache = {}
+        self._regex_cache = {}
+        self._needs_splitting_cache = {}
+    
+    def _get_cached_markers(self, mapping_type):
+        if mapping_type not in self._markers_cache:
+            markers = [
+                info["replacement"]
+                for info in self.mappings.get(mapping_type, {}).values()
+                if info["mode"] > 0
+            ]
+            self._markers_cache[mapping_type] = markers
+        return self._markers_cache[mapping_type]
+    
+    def _needs_splitting(self, mapping_type):
+        if mapping_type not in self._needs_splitting_cache:
+            self._needs_splitting_cache[mapping_type] = any(
+                info["mode"] > 0
+                for info in self.mappings.get(mapping_type, {}).values()
+            )
+        return self._needs_splitting_cache[mapping_type]
+    
+    def _build_tries(self):
+        for key_bytes, info in self.mappings["01ff"].items():
+            self.trie_01ff.insert(key_bytes, info["replacement"], info["mode"])
+        for key_bytes, info in self.mappings["02ff"].items():
+            self.trie_02ff.insert(key_bytes, info["replacement"], info["mode"])
 
     def load_jis0208_index(self):
         index = {}
@@ -176,10 +262,27 @@ class ChunkParser:
         return rev
 
     def load_mappings_from_data(self, mapping_data):
-        return parse_mapping_data(mapping_data)
+        mappings = {"01ff": {}, "02ff": {}, "alph": {}}
+        for line in mapping_data.splitlines():
+            line = line.strip()
+            if not line or line.startswith('#'):
+                continue
+            parts = re.split(r'\s+', line)
+            sig_type = parts[0].lower()
+            if sig_type in ("01ff", "02ff"):
+                if len(parts) < 4:
+                    continue
+                code = parts[1].upper()
+                mode = min(3, max(0, int(parts[2])))
+                repl = f"[${parts[3]}$]"
+                mappings[sig_type][bytes.fromhex(code)] = {'replacement': repl, 'mode': mode}
+            elif sig_type == "alph" and len(parts) >= 3:
+                char, repl = parts[1], parts[2]
+                mappings["alph"][char] = {'replacement': repl, 'mode': 0}
+        return mappings
 
     def _format_debug_dump(self, data, xor_start=0):
-        lines = ["# DEBUG", f"#   Chunk dump (XOR from 0x{xor_start:02X})",
+        lines = ["# DEBUG", f"#   Chunk dump (XOR from 0x{xor_start:04X})",
                  "#            0  1  2  3  4  5  6  7  8  9  A  B  C  D  E  F"]
         for i in range(0, len(data), 16):
             chunk = bytearray(data[i:i+16])
@@ -194,17 +297,12 @@ class ChunkParser:
         result = []
         i = 0
         data_len = len(data)
-        mappings = self.mappings[mapping_type]
-        keys = self.sorted_keys[mapping_type]
+        trie = self.trie_01ff if mapping_type == "01ff" else self.trie_02ff
         while i < data_len:
-            matched = False
-            for key in keys:
-                if data.startswith(key, i):
-                    result.append(mappings[key]['replacement'])
-                    i += len(key)
-                    matched = True
-                    break
-            if matched:
+            matched_len, replacement, _ = trie.find_longest_match(data, i)
+            if matched_len > 0:
+                result.append(replacement)
+                i += matched_len
                 continue
             b = data[i]
             if 0x20 <= b <= 0x7E:
@@ -234,7 +332,7 @@ class ChunkParser:
                     i += 2
                 else:
                     try:
-                        char = data[i:i+2].decode('cp932') #shift_jis
+                        char = data[i:i+2].decode('cp932')
                         if len(char) == 1 and ord(char) >= 0x80:
                             result.append(char)
                             i += 2
@@ -249,109 +347,179 @@ class ChunkParser:
         return ''.join(result)
 
     def encode_with_mapping(self, text, mapping_type="01ff"):
+        if not text:
+            return b""
+        cache_key = (text, mapping_type)
+        if hasattr(self, '_encode_cache') and cache_key in self._encode_cache:
+            return self._encode_cache[cache_key]
         result = bytearray()
         i = 0
-        while i < len(text):
-            if text.startswith('[$', i):
-                end = text.find('$]', i)
-                if end != -1:
-                    inner = text[i+2:end]
-                    if len(inner) == 2 and all(c in '0123456789ABCDEFabcdef' for c in inner):
-                        result.append(int(inner, 16))
-                        i = end + 2
-                        continue
-            char = text[i]
-            if char in self.alph_reverse:
-                result.extend(self.alph_reverse[char])
+        text_len = len(text)
+        reverse_map = self.reverse_mappings[mapping_type]
+        if not hasattr(self, '_token_index'):
+            self._build_token_index()
+        token_index = self._token_index[mapping_type]
+        while i < text_len:
+            current_char = text[i]
+            if current_char == '[' and i + 1 < text_len and text[i+1] == '$':
+                end_pos = text.find('$]', i)
+                if end_pos != -1:
+                    inner = text[i+2:end_pos]
+                    if len(inner) == 2:
+                        c1, c2 = inner[0], inner[1]
+                        if ((c1 >= '0' and c1 <= '9') or (c1 >= 'A' and c1 <= 'F') or (c1 >= 'a' and c1 <= 'f')) and \
+                           ((c2 >= '0' and c2 <= '9') or (c2 >= 'A' and c2 <= 'F') or (c2 >= 'a' and c2 <= 'f')):
+                            result.append(int(inner, 16))
+                            i = end_pos + 2
+                            continue
+            if current_char in self.alph_reverse:
+                result.extend(self.alph_reverse[current_char])
                 i += 1
                 continue
             matched = False
-            for token in sorted(self.reverse_mappings[mapping_type], key=len, reverse=True):
-                if text.startswith(token, i):
-                    result.extend(self.reverse_mappings[mapping_type][token])
-                    i += len(token)
-                    matched = True
-                    break
+            if current_char in token_index:
+                for token in token_index[current_char]:
+                    token_len = len(token)
+                    if i + token_len <= text_len and text.startswith(token, i):
+                        result.extend(reverse_map[token])
+                        i += token_len
+                        matched = True
+                        break
             if matched:
                 continue
-            cp = ord(char)
+            cp = ord(current_char)
             if 0x20 <= cp <= 0x7E:
                 result.append(cp)
                 i += 1
-            elif 0xFF61 <= cp <= 0xFF9F:
+                continue
+            if 0xFF61 <= cp <= 0xFF9F:
                 result.append(cp - 0xFF61 + 0xA1)
                 i += 1
-            elif self.jis0208_cp_to_ptr and cp in self.jis0208_cp_to_ptr:
+                continue
+            if self.jis0208_cp_to_ptr and cp in self.jis0208_cp_to_ptr:
                 pointer = self.jis0208_cp_to_ptr[cp]
                 if 8272 <= pointer <= 8835:
-                    result.extend(b'?')
+                    result.append(ord('?'))
                     i += 1
                     continue
                 lead = pointer // 188
-                lead_offset = 0x81 if lead < 0x1F else 0xC1
                 trail = pointer % 188
-                offset = 0x40 if trail < 0x3F else 0x41
-                b1 = lead + lead_offset
-                b2 = trail + offset
-                if (0x81 <= b1 <= 0x9F or 0xE0 <= b1 <= 0xFC) and ((0x40 <= b2 <= 0x7E) or (0x80 <= b2 <= 0xFC)):
+                if lead < 0x1F:
+                    b1 = lead + 0x81
+                else:
+                    b1 = lead + 0xC1
+                
+                if trail < 0x3F:
+                    b2 = trail + 0x40
+                else:
+                    b2 = trail + 0x41
+                if (0x81 <= b1 <= 0x9F or 0xE0 <= b1 <= 0xFC) and \
+                   ((0x40 <= b2 <= 0x7E) or (0x80 <= b2 <= 0xFC)):
                     result.append(b1)
                     result.append(b2)
                     i += 1
                 else:
-                    result.extend(b'?')
+                    result.append(ord('?'))
                     i += 1
-            else:
-                try:
-                    encoded = char.encode('cp932') #shift_jis
-                    if len(encoded) in (1, 2):
-                        result.extend(encoded)
-                        i += 1
-                        continue
-                except (UnicodeEncodeError, AttributeError):
-                    pass
-                result.extend(b'?')
-                i += 1
-        return bytes(result)
+                continue
+            try:
+                if cp < 0x80:
+                    encoded = bytes([cp])
+                else:
+                    encoded = current_char.encode('cp932', errors='ignore')
+                
+                if encoded:
+                    result.extend(encoded)
+                    i += 1
+                    continue
+            except (UnicodeEncodeError, AttributeError):
+                pass
+            result.append(ord('?'))
+            i += 1
+        result_bytes = bytes(result)
+        if not hasattr(self, '_encode_cache'):
+            self._encode_cache = {}
+        if text_len < 300:
+            if len(self._encode_cache) > 2000:
+                keys = list(self._encode_cache.keys())
+                for key in keys[:500]:
+                    del self._encode_cache[key]
+            self._encode_cache[cache_key] = result_bytes
+        return result_bytes
+
+
+    def _build_token_index(self):
+        self._token_index = {"01ff": {}, "02ff": {}}
+        for mapping_type in ["01ff", "02ff"]:
+            reverse_map = self.reverse_mappings[mapping_type]
+            token_index = {}
+            for token in reverse_map.keys():
+                if not token:
+                    continue
+                first_char = token[0]
+                if first_char not in token_index:
+                    token_index[first_char] = []
+                token_index[first_char].append(token)
+            for first_char in token_index:
+                token_index[first_char].sort(key=len, reverse=True)
+            self._token_index[mapping_type] = token_index
 
     def split_by_iterate_markers(self, text, mapping_type="01ff"):
-        markers = [(m['replacement'], m['mode']) for m in self.mappings.get(mapping_type, {}).values() if m['mode'] > 0]
+        if not text:
+            return []
+        if not self._needs_splitting(mapping_type):
+            return [text]
+        markers = self._get_cached_markers(mapping_type)
         if not markers:
             return [text]
-        parts = [text]
-        for marker, mode in markers:
-            new_parts = []
-            for part in parts:
-                if mode == 1:
-                    split = part.split(marker)
-                    for idx, sp in enumerate(split):
-                        if idx > 0:
-                            new_parts.append(marker)
-                        if sp:
-                            new_parts.append(sp)
-                elif mode == 2:
-                    split = part.split(marker)
-                    for idx, sp in enumerate(split):
-                        if sp:
-                            new_parts.append(sp)
-                        if idx < len(split) - 1:
-                            new_parts.append(marker)
-                elif mode == 3:
-                    tokens = part.split(marker)
-                    for idx, tok in enumerate(tokens):
-                        if tok:
-                            new_parts.append(tok)
-                        if idx < len(tokens) - 1:
-                            new_parts.append(marker)
-                else:
-                    new_parts.append(part)
-            parts = new_parts
-        return [p for p in parts if p]
+        if len(markers) == 1:
+            return self._split_single_marker(text, markers[0], mapping_type)
+        return self._split_multiple_markers(text, markers, mapping_type)
+
+    def _split_single_marker(self, text, marker, mapping_type):
+        if marker not in text:
+            return [text]
+        mode = 0
+        for key_bytes, info in self.mappings.get(mapping_type, {}).items():
+            if info["replacement"] == marker:
+                mode = info["mode"]
+                break
+        if mode != 1:
+            return [text]
+        parts = text.split(marker)
+        result = []
+        if parts[0]:
+            result.append(parts[0])
+        for i in range(1, len(parts)):
+            result.append(marker)
+            if parts[i]:
+                result.append(parts[i])
+        return result
+
+    def _split_multiple_markers(self, text, markers, mapping_type):
+        cache_key = f"split_mode1_regex_{mapping_type}"
+        if cache_key not in self._regex_cache:
+            split_delimiters = [
+                info["replacement"]
+                for info in self.mappings.get(mapping_type, {}).values()
+                if info["mode"] == 1
+            ]
+            if split_delimiters:
+                split_delimiters.sort(key=len, reverse=True)
+                pattern = '|'.join(re.escape(m) for m in split_delimiters)
+                self._regex_cache[cache_key] = re.compile(f'({pattern})')
+            else:
+                self._regex_cache[cache_key] = None
+        regex = self._regex_cache[cache_key]
+        return [text] if regex is None else [p for p in regex.split(text) if p]
 
     def parse_01ff(self, data):
         total_size = len(data)
         if total_size < 8:
             raise ValueError("File too short for 01FF")
         resource_name = None
+        if isinstance(data, memoryview):
+            data = bytes(data)
         if data[2:6] == b'\xF0\x00\x50\x00' and total_size >= 8:
             data_size = struct.unpack('<H', data[6:8])[0]
             pos = 8
@@ -367,7 +535,10 @@ class ChunkParser:
             raise ValueError(f"Declared data size {data_size} != actual {total_size - pos}")
         decoded_data = bytes(b ^ 0xFF for b in data[pos:pos + data_size])
         full_text = self.decode_with_mapping(decoded_data, "01ff")
-        lines = self.split_by_iterate_markers(full_text, "01ff")
+        if self._needs_splitting("01ff"):
+            lines = self.split_by_iterate_markers(full_text, "01ff")
+        else:
+            lines = [full_text]
         output = [
             "[FILE INFO]",
             f"SIGNATURE: {signature}",
@@ -388,6 +559,8 @@ class ChunkParser:
         total_size = len(data)
         if total_size < 4:
             raise ValueError("File too short for 02FF")
+        if isinstance(data, memoryview):
+            data = bytes(data)
         if data[2:6] == b'\xF0\x00\x50\x00' and total_size > 7:
             signature = data[:6].hex().upper()
             expected_count = data[7] + 1
@@ -430,10 +603,16 @@ class ChunkParser:
                     text = ""
                 else:
                     text = self.decode_with_mapping(decoded_data[rel_start:rel_end], "02ff")
-            for line in self.split_by_iterate_markers(text, "02ff"):
-                if line.strip() or text == "":
-                    output.append(f"LINE_{i:03d}_ORIG: {line}")
-                    output.append(f"LINE_{i:03d}_TRAN: {line}")
+            if self._needs_splitting("02ff"):
+                for line in self.split_by_iterate_markers(text, "02ff"):
+                    if line.strip() or text == "":
+                        output.append(f"LINE_{i:03d}_ORIG: {line}")
+                        output.append(f"LINE_{i:03d}_TRAN: {line}")
+                        output.append("")
+            else:
+                if text.strip() or text == "":
+                    output.append(f"LINE_{i:03d}_ORIG: {text}")
+                    output.append(f"LINE_{i:03d}_TRAN: {text}")
                     output.append("")
         if self.debug:
             output.extend(self._format_debug_dump(data, data_start))
@@ -445,13 +624,23 @@ class ChunkParser:
         for line in lines:
             if line.startswith("SIGNATURE: "):
                 signature = line.split(":", 1)[1].strip()
+                break
         content_lines = []
-        in_content = False
+        found_content = False
+        
         for line in lines:
             if line == "[CONTENT]":
-                in_content = True
-            elif in_content and line.startswith("LINE_") and "_TRAN: " in line:
-                content_lines.append(line.split(": ", 1)[1])
+                found_content = True
+                continue
+            if not found_content:
+                continue
+            if "_TRAN: " in line and line.startswith("LINE_"):
+                try:
+                    colon_pos = line.find(": ")
+                    if colon_pos != -1:
+                        content_lines.append(line[colon_pos + 2:])
+                except (ValueError, IndexError):
+                    continue
         full_text = "".join(content_lines)
         decoded_bytes = self.encode_with_mapping(full_text, "01ff")
         encoded_bytes = bytes(b ^ 0xFF for b in decoded_bytes)
@@ -466,6 +655,8 @@ class ChunkParser:
         for line in lines:
             if line.startswith("SIGNATURE: "):
                 signature = line.split(":", 1)[1].strip()
+                if signature:
+                    continue
             elif line.startswith("OFFSETS: "):
                 try:
                     expected_offsets = int(line.split(":", 1)[1].strip())
@@ -473,17 +664,34 @@ class ChunkParser:
                     expected_offsets = 0
         content_by_index = {}
         in_content = False
+        
         for line in lines:
             if line == "[CONTENT]":
                 in_content = True
-            elif in_content and line.startswith("LINE_") and "_TRAN: " in line:
-                idx_match = re.match(r'LINE_(\d+)_TRAN:', line)
-                if idx_match:
-                    idx = int(idx_match.group(1))
+                continue
+            if not in_content:
+                continue
+            if "_TRAN: " in line and line.startswith("LINE_"):
+                try:
+                    idx_start = line.find('_') + 1
+                    idx_end = line.find('_', idx_start)
+                    idx = int(line[idx_start:idx_end])
                     text = line.split(": ", 1)[1]
-                    content_by_index.setdefault(idx, []).append(text)
-        record_count = expected_offsets if expected_offsets > 0 else (max(content_by_index.keys()) + 1 if content_by_index else 0)
-        raw_records = ["".join(content_by_index.get(i, [])) for i in range(record_count)]
+                    if idx not in content_by_index:
+                        content_by_index[idx] = []
+                    content_by_index[idx].append(text)
+                except (ValueError, IndexError):
+                    continue
+        if expected_offsets > 0:
+            record_count = expected_offsets
+        elif content_by_index:
+            record_count = max(content_by_index.keys()) + 1
+        else:
+            record_count = 0
+        raw_records = [""] * record_count
+        for idx, texts in content_by_index.items():
+            if idx < record_count:
+                raw_records[idx] = "".join(texts)
         decoded_fragments = [self.encode_with_mapping(r, "02ff") for r in raw_records]
         if signature == "02FFF0005000":
             base_header = bytes.fromhex("02FFF0005000") + bytes([0, len(decoded_fragments) - 1])
@@ -495,32 +703,14 @@ class ChunkParser:
             rel_offsets.append(current)
             current += len(frag)
         data_start_abs = len(base_header) + len(rel_offsets) * 2 + 2
-        abs_offsets = [off + data_start_abs for off in rel_offsets]
-        offset_bytes = b"".join(struct.pack("<H", off) for off in abs_offsets) + b"\xFF\xFF"
-        encoded_full = b"".join(bytes(b ^ 0xFF for b in frag) for frag in decoded_fragments)
+        offset_bytes = bytearray()
+        for off in rel_offsets:
+            offset_bytes.extend(struct.pack("<H", off + data_start_abs))
+        offset_bytes.extend(b"\xFF\xFF")
+        encoded_full = bytearray()
+        for frag in decoded_fragments:
+            encoded_full.extend(bytes(b ^ 0xFF for b in frag))
         return base_header + offset_bytes + encoded_full
-
-
-# ===== ПАРСЕР MAPPING =====
-def parse_mapping_data(raw_text):
-    mappings = {"01ff": {}, "02ff": {}, "alph": {}}
-    for line in raw_text.splitlines():
-        line = line.strip()
-        if not line or line.startswith('#'):
-            continue
-        parts = re.split(r'\s+', line)
-        sig_type = parts[0].lower()
-        if sig_type in ("01ff", "02ff"):
-            if len(parts) < 4:
-                continue
-            code = parts[1].upper()
-            mode = min(3, max(0, int(parts[2])))
-            repl = f"[${parts[3]}$]"
-            mappings[sig_type][bytes.fromhex(code)] = {'replacement': repl, 'mode': mode}
-        elif sig_type == "alph" and len(parts) >= 3:
-            char, repl = parts[1], parts[2]
-            mappings["alph"][char] = {'replacement': repl, 'mode': 0}
-    return mappings
 
 
 class FM4MSGTool:
@@ -544,12 +734,33 @@ class FM4MSGTool:
         self.setup_gui()
         self.load_config()
         self.mapping_modified = False
+        self._parser_cache = {}
+        self._last_mapping_hash = None
+        self._cached_parser = None
         for w in (self.alph_text, self.ff01_text, self.ff02_text):
             w.bind("<KeyRelease>", self.on_mapping_change)
             w.bind("<Control-v>", self.on_mapping_change)
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         self.root.bind("<Configure>", self.on_window_configure)
-            
+    
+    def get_cached_parser(self):
+        mapping_text = self.get_current_mapping_text()
+        current_hash = hash(mapping_text)
+        if (self._cached_parser is not None and 
+            current_hash == self._last_mapping_hash):
+            return self._cached_parser
+        cache_key = (current_hash, 
+                    self.debug_output_var.get(), 
+                    self.use_jis0208_var.get())
+        if cache_key not in self._parser_cache:
+            self._parser_cache[cache_key] = ChunkParser(
+                mapping_data=mapping_text,
+                debug=self.debug_output_var.get(),
+                use_jis0208=self.use_jis0208_var.get())
+        self._last_mapping_hash = current_hash
+        self._cached_parser = self._parser_cache[cache_key]
+        return self._cached_parser
+        
     def on_mapping_change(self, event=None):
         self.mapping_modified = True
     
@@ -597,8 +808,8 @@ class FM4MSGTool:
         self.setup_quickbms_tab()
         self.setup_msg_tab()
         self.setup_mapping_tab("ALPH", "Формат: ALPH\t<символ>\t<замена>\t<#примечание>\nПример: ALPH\tА\tA\t# 'А' кириллическая -> 'A' латинская\n\tALPH\tВ\t0x42\t# 'В' кириллическая -> байт 0x42 ('B')")
-        self.setup_mapping_tab("01FF", "Формат: 01FF\t<HEX>\t<режим>\t<замена_без_пробелов>\t<#примечание>\nРежим разделения на подстроки: 0=не делить, 1=перед, 2=после, 3=перед и после\nПример: 01FF\tFF03\t3\tln_break_FF03\t# перенос строки")
-        self.setup_mapping_tab("02FF", "Формат: 02FF\t<HEX>\t<режим>\t<замена_без_пробелов>\t<#примечание>\nРежим разделения на подстроки: 0=не делить, 1=перед, 2=после, 3=перед и после\nПример: 02FF\tFD3F\t0\tstart_FD3F\t# начало записи")
+        self.setup_mapping_tab("01FF", "Формат: 01FF\t<HEX>\t<режим>\t<замена_без_пробелов>\t<#примечание>\nРежим разделения на подстроки: 0=не делить, 1=отделять маркер\nПример: 01FF\tFF03\t1\tln_break_FF03\t# перенос строки")
+        self.setup_mapping_tab("02FF", "Формат: 02FF\t<HEX>\t<режим>\t<замена_без_пробелов>\t<#примечание>\nРежим разделения на подстроки: 0=не делить, 1=отделять маркер\nПример: 02FF\tFD3F\t0\tstart_FD3F\t# начало записи")
         self.setup_settings_tab()
         self.show_tab(1)
 
@@ -624,7 +835,7 @@ class FM4MSGTool:
         self.text_context_menu.bind_to_widget(script_entry)
         tk.Button(script_frame, text="Обзор", command=self.select_quickbms_script, width=10).pack(side=tk.RIGHT, padx=5)
 
-        extract_frame = tk.LabelFrame(frame, text="ИЗВЛЕЧЕНИЕ из DVDIMAGE.DAT/POS")
+        extract_frame = tk.LabelFrame(frame, text="Извлечение из DVDIMAGE.DAT/POS")
         extract_frame.pack(fill=tk.X, padx=5, pady=5)
         tk.Label(extract_frame, text="Файл DVDIMAGE.DAT:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
         extract_input = tk.Entry(extract_frame, textvariable=self.quickbms_extract_input_path_var, width=40)
@@ -660,10 +871,10 @@ class FM4MSGTool:
                   bg=self.colors["accent_b"], font=('Arial', 10, 'bold'), height=2).grid(
             row=2, column=0, columnspan=3, pady=10, sticky=tk.EW)
         tk.Label(build_frame,
-                 text="Оба DAT/POS будут перезаписаны!",
+                 text="Внимание! Оба DAT/POS будут перезаписаны.",
                  font=('Arial', 8), fg='red').grid(row=3, column=0, columnspan=3)
         tk.Label(build_frame,
-                 text="Для ускорения сборки указывайте только изменённые файлы.\nСтруктура и имена должны быть оригинальными.",
+                 text="Для ускорения прцесса замены указывайте только изменённые файлы.\nСтруктура папок и имена файлов должны быть оригинальными.",
                  font=('Arial', 8)).grid(row=4, column=0, columnspan=3)
 
         extract_frame.grid_columnconfigure(1, weight=1)
@@ -683,8 +894,8 @@ class FM4MSGTool:
         self.text_context_menu.bind_to_widget(self.extract_input_entry)
         btn_frame1 = tk.Frame(extract_frame)
         btn_frame1.grid(row=0, column=2, padx=5, pady=5)
-        tk.Button(btn_frame1, text="Файл", command=self.select_extract_input_file, width=8).pack(side=tk.LEFT, padx=2)
-        tk.Button(btn_frame1, text="Папка", command=self.select_extract_input_folder, width=8).pack(side=tk.LEFT, padx=2)
+        tk.Button(btn_frame1, text="Один файл", command=self.select_extract_input_file, width=10).pack(side=tk.LEFT, padx=2)
+        tk.Button(btn_frame1, text="Папка с MSG", command=self.select_extract_input_folder, width=10).pack(side=tk.LEFT, padx=2)
 
         tk.Label(extract_frame, text="Выходная папка:").grid(row=1, column=0, sticky=tk.W, padx=5, pady=5)
         self.extract_output_path_var = tk.StringVar(value=str(Path.cwd() / "extracted-txt"))
@@ -705,7 +916,7 @@ class FM4MSGTool:
         build_frame = tk.LabelFrame(msg_frame, text="СБОРКА MSG из текста")
         build_frame.pack(fill=tk.X, padx=5, pady=5)
 
-        tk.Label(build_frame, text="Папка с TXT:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
+        tk.Label(build_frame, text="Входная папка:").grid(row=0, column=0, sticky=tk.W, padx=5, pady=5)
         self.build_input_path_var = tk.StringVar()
         build_input_entry = tk.Entry(build_frame, textvariable=self.build_input_path_var, width=40)
         build_input_entry.grid(row=0, column=1, sticky=tk.EW, padx=5, pady=5)
@@ -730,7 +941,7 @@ class FM4MSGTool:
         build_frame.grid_columnconfigure(1, weight=1)
         hint_frame = tk.Frame(msg_frame)
         hint_frame.pack(fill=tk.X, padx=5, pady=(0, 10))
-        tk.Label(hint_frame, text="Папка с TXT файлами = Выходная папка при извлечении",
+        tk.Label(hint_frame, text="'Входная папка при сборке' может быть папкой с TXT файлами или как 'Выходная папка при извлечении'",
                  justify=tk.LEFT, font=('Arial', 8), wraplength=400).pack(anchor=tk.W)
 
     def setup_mapping_tab(self, prefix: str, hint_text: str):
@@ -831,26 +1042,55 @@ class FM4MSGTool:
         tk.Checkbutton(settings_frame, text="Сохранять положение и размер окна",
                        variable=self.save_window_geometry_var).pack(anchor=tk.W, pady=2)
         self.debug_output_var = tk.BooleanVar(value=False)
-        tk.Checkbutton(settings_frame, text="Вывод отладочной информации в txt файлах при извлечении",
+        tk.Checkbutton(settings_frame, text="Вывод отладочной информации в TXT файлах при извлечении",
                        variable=self.debug_output_var).pack(anchor=tk.W, pady=2)
         self.use_jis0208_var = tk.BooleanVar(value=True)
         tk.Checkbutton(settings_frame, text="Использовать index-jis0208.txt для японской кодировки (рекомендуется)",
                        variable=self.use_jis0208_var).pack(anchor=tk.W, pady=2)
         self.quickbms_reimport_mode = tk.IntVar(value=2)
-        tk.Label(settings_frame, text="QuickBMS сборка:").pack(anchor=tk.W, pady=(5,0))
+        tk.Label(settings_frame, text="QuickBMS (замена файлов):").pack(anchor=tk.W, pady=(5,0))
         rb_frame = tk.Frame(settings_frame)
         rb_frame.pack(anchor=tk.W)
         tk.Radiobutton(rb_frame, text="Reimport", variable=self.quickbms_reimport_mode, value=1).pack(side=tk.LEFT)
         tk.Radiobutton(rb_frame, text="Reimport 2 (рекомендуется)", variable=self.quickbms_reimport_mode, value=2).pack(side=tk.LEFT)
         tk.Radiobutton(rb_frame, text="Reimport 3", variable=self.quickbms_reimport_mode, value=3).pack(side=tk.LEFT)
         btn_frame = tk.Frame(settings_frame)
-        btn_frame.pack(fill=tk.X, pady=10)
+        btn_frame.pack(fill=tk.BOTH, side=tk.LEFT, padx=10, pady=10)
         tk.Button(btn_frame, text="Сохранить настройки", bg=self.colors["accent_g"],
                   command=self.save_config, width=20, height=2).pack(pady=2)
         tk.Button(btn_frame, text="Загрузить настройки", bg=self.colors["accent_b"],
                   command=self.load_config, width=20, height=2).pack(pady=2)
         tk.Button(btn_frame, text="Сбросить все настройки", bg=self.colors["accent_r"],
                   command=self.reset_all_settings, width=20, height=2).pack(pady=2)
+        c = tk.Canvas(settings_frame, width=350, height=250, bg='#000', highlightthickness=0)
+        c.pack(pady=10)
+        self.canvas_objects = []
+        t = [("FRONT", 55, "#fff", 40), ("4", 125, "#f00", 60), ("MISSION", 195, "#fff", 40)]
+        for T, Y, C, S in t:
+            for dx, dy in [(-2,-2),(2,-2),(-2,2),(2,2)]:
+                oid = c.create_text(175+dx, Y+dy, text=T, font=("Arial Black", S, "bold"), fill="#000", anchor="center")
+                self.canvas_objects.append((oid,"outline",T))
+            tid = c.create_text(175, Y, text=T, font=("Arial Black", S, "bold"), fill=C, anchor="center")
+            self.canvas_objects.append((tid,"text",T))
+        for a,b,d,e in [(10,90,340,90),(10,165,340,165)]:
+            lid = c.create_line(a,b,d,e,fill="#f00",width=3)
+            self.canvas_objects.append((lid,"line"))
+        for x,y,x1,y1 in [(10,10,25,25),(340,10,325,25),(10,240,25,225),(340,240,325,225)]:
+            hlid = c.create_line(x,y,x1,y,fill="#f00",width=5)
+            vlid = c.create_line(x,y,x,y1,fill="#f00",width=5)
+            self.canvas_objects.extend([(hlid,"corner"),(vlid,"corner")])
+        self.cl = 0
+        def _c(e=None):
+            self.cl += 1
+            seed = hash((self.cl, e.x if e else 0, e.y if e else 0)) % 1000000
+            bg = f"#{(seed*137)%256:02x}{(seed*193)%256:02x}{(seed*251)%256:02x}"
+            txt = f"#{((seed*137)%256+128)%256:02x}{((seed*193)%256+128)%256:02x}{((seed*251)%256+128)%256:02x}"
+            ln = f"#{((seed*137)%256+64)%256:02x}{((seed*193)%256+96)%256:02x}{((seed*251)%256+32)%256:02x}"
+            c.config(bg=bg)
+            for obj_id, typ, *ex in self.canvas_objects:
+                col = {"text":txt, "outline":bg, "line":ln, "corner":ln}[typ]
+                c.itemconfig(obj_id, fill=col)
+        c.bind("<Button-1>", _c)
 
     def setup_log_panel(self, parent):
         log_frame = tk.LabelFrame(parent, text="Логи")
@@ -1015,21 +1255,21 @@ class FM4MSGTool:
                 repl = parts[3]
 
                 if not re.fullmatch(r'[0-9A-F]+', hex_str):
-                    errors.append(f"{prefix}: строка #{line_num} — HEX не корректен: '{hex_str}'")
+                    errors.append(f"{prefix}: {repl} — HEX не корректен: '{hex_str}'")
                     continue
                 if len(hex_str) % 2 != 0:
-                    errors.append(f"{prefix}: строка #{line_num} — HEX должен быть чётной длины: '{hex_str}'")
+                    errors.append(f"{prefix}: {repl} — HEX должен быть чётной длины: '{hex_str}'")
                     continue
 
                 try:
                     mode = int(parts[2])
-                    if mode not in (0, 1, 2, 3):
-                        errors.append(f"{prefix}: строка #{line_num} — некорректный режим: {mode} (допустимо: 0-3)")
+                    if mode not in (0, 1):
+                        errors.append(f"{prefix}: {hex_str} — некорректный режим: {mode} (допустимо: 0 или 1)")
                 except ValueError:
-                    errors.append(f"{prefix}: строка #{line_num} — режим не является целым числом: '{parts[2]}'")
-                    mode = -1
+                    errors.append(f"{prefix}: {hex_str} — режим не является целым числом: '{parts[2]}'")
+                    mode = 0
 
-                if mode in (0, 1, 2, 3):
+                if mode in (0, 1):
                     (ff01_entries if prefix == "01FF" else ff02_entries).append((hex_str, mode, repl))
 
         seen = set()
@@ -1109,8 +1349,7 @@ class FM4MSGTool:
                 self.log_message("Не найдено MSG файлов для обработки")
                 return
             total_files = len(files_to_process)
-            parser = ChunkParser(mapping_data=self.get_current_mapping_text(),
-                    debug=self.debug_output_var.get(), use_jis0208=self.use_jis0208_var.get())
+            parser = self.get_cached_parser()
             processed_files = 0
             for file_path in files_to_process:
                 try:
@@ -1132,54 +1371,66 @@ class FM4MSGTool:
     def parse_single_msg(self, file_path: Path, output_path: Path, parser: ChunkParser):
         try:
             with open(file_path, 'rb') as f:
-                signature = f.read(4)
-                if signature != b'MSG\x00':
-                    self.log_message(f"Неверная сигнатура в {file_path.name}")
-                    return
-                file_size = struct.unpack('<I', f.read(4))[0]
-                actual_file_size = file_path.stat().st_size
-                if file_size != actual_file_size:
-                    self.log_message(f"  [X] Несоответствие размера в {file_path.name}: {file_size} != {actual_file_size}")
-
-                offsets = []
-                while True:
-                    raw = f.read(4)
-                    if len(raw) < 4:
-                        raise ValueError("Неожиданный конец файла при чтении смещений")
-                    val = struct.unpack('<I', raw)[0]
-                    if val == 0xFFFFFFFF:
-                        break
-                    offsets.append(val)
-                if not offsets:
-                    self.log_message(f"Таблица смещений в {file_path.name} пуста")
-                    return
-                if self.log_showall_var.get():
-                    self.log_message(f" {file_path.name} | {file_size} байт | {len(offsets)} чанков")
-
-                txt_dir = output_path / Path(file_path).stem
-                txt_dir.mkdir(exist_ok=True)
-                for i in range(len(offsets)):
-                    start = offsets[i]
-                    end = file_size if i == len(offsets) - 1 else offsets[i + 1]
-                    if end <= start:
-                        continue
-                    f.seek(start)
-                    data = f.read(end - start)
-                    sig = data[:2].hex().upper()
-                    txt_name = f"{i:04d}.txt"
-                    txt_path = txt_dir / txt_name
+                file_data = f.read()
+            file_size = len(file_data)
+            if file_data[:4] != b'MSG\x00':
+                self.log_message(f"Неверная сигнатура в {file_path.name}")
+                return
+            declared_size = struct.unpack('<I', file_data[4:8])[0]
+            if declared_size != file_size and self.log_showall_var.get():
+                self.log_message(f"  [i] Размер в заголовке: {declared_size}, фактический: {file_size}")
+            offsets = []
+            pos = 8
+            while pos + 4 <= file_size:
+                val = struct.unpack('<I', file_data[pos:pos+4])[0]
+                if val == 0xFFFFFFFF:
+                    pos += 4
+                    break
+                offsets.append(val)
+                pos += 4
+            if not offsets:
+                self.log_message(f"Таблица смещений в {file_path.name} пуста")
+                return
+            if self.log_showall_var.get():
+                self.log_message(f" {file_path.name} | {file_size} байт | {len(offsets)} чанков")
+            txt_dir = output_path / file_path.stem
+            txt_dir.mkdir(parents=True, exist_ok=True)
+            processed_chunks = 0
+            for i in range(len(offsets)):
+                start = offsets[i]
+                end = file_size if i == len(offsets) - 1 else offsets[i + 1]
+                if end <= start:
+                    continue
+                chunk_view = memoryview(file_data)[start:end]
+                sig = chunk_view[:2].hex().upper()
+                txt_path = txt_dir / f"{i:04d}.txt"
+                try:
                     if sig == "01FF":
-                        txt_content = parser.parse_01ff(data)
+                        txt_content = parser.parse_01ff(bytes(chunk_view))
                     elif sig == "02FF":
-                        txt_content = parser.parse_02ff(data)
+                        txt_content = parser.parse_02ff(bytes(chunk_view))
                     else:
+                        self.log_message(f"  [i] Пропуск чанка {i} с неизвестной сигнатурой: {sig}")
                         continue
-                    txt_path.write_text(txt_content, encoding='utf-8')
-                    if self.log_showall_var.get():
-                        self.log_message(f"  Сохранён: {txt_name}")
-                self.log_message(f" {len(offsets)} TXT файлов сохранено в: {txt_dir}")
+                    with open(txt_path, 'w', encoding='utf-8', buffering=8192) as f:
+                        f.write(txt_content)
+                    processed_chunks += 1
+                    if self.log_showall_var.get() and processed_chunks % 20 == 0:
+                        self.log_message(f"  Обработано чанков: {processed_chunks}")
+                except Exception as e:
+                    self.log_message(f"  [X] Ошибка в чанке {i} ({sig}): {str(e)}")
+                    error_content = f"[ERROR]\nFailed to parse chunk {i}\nError: {str(e)}\nSignature: {sig}"
+                    with open(txt_path, 'w', encoding='utf-8') as f:
+                        f.write(error_content)
+                    continue
+            if processed_chunks > 0:
+                if self.log_showall_var.get():
+                    self.log_message(f" {processed_chunks} TXT файлов сохранено в: {txt_dir}")
+            else:
+                self.log_message(f" [i] В файле {file_path.name} не найдено валидных чанков")
         except Exception as e:
             self.log_message(f"Ошибка при обработке {file_path}: {str(e)}")
+            traceback.print_exc()
             raise
 
     def start_building(self):
@@ -1189,12 +1440,12 @@ class FM4MSGTool:
             return
         input_path = Path(input_path)
         if not input_path.exists():
-            messagebox.showerror("Ошибка", "Указанная папка не существует")
+            messagebox.showerror("Ошибка", "Указанный путь не существует")
             return
         is_valid, errors = self.validate_current_mapping()
         if not is_valid:
             for err in errors:
-                self.log_message(f"[X МАППИНГА] {err}")
+                self.log_message(f"[X] {err}")
             self.log_message("Сборка отменена из-за ошибок в маппинге.")
             return
         output_path = Path(self.build_output_path_var.get().strip() or str(Path.cwd() / "builded-msg"))
@@ -1208,7 +1459,18 @@ class FM4MSGTool:
         self.build_status_var.set("Сборка...")
         self.root.update()
         try:
-            self.build_msg_files(input_path, output_path)
+            txt_files = list(input_path.glob("*.txt"))
+            if txt_files:
+                parser = ChunkParser(
+                    mapping_data=self.get_current_mapping_text(),
+                    debug=self.debug_output_var.get(),
+                    use_jis0208=self.use_jis0208_var.get()
+                )
+                self.build_single_msg(input_path, output_path, parser)
+                self.log_message(f"Собран один MSG из папки: {input_path.name}")
+                messagebox.showinfo("Завершено", f"Сборка {input_path.name}.msg завершена")
+            else:
+                self.build_msg_files(input_path, output_path)
             self.build_status_var.set("")
         except Exception as e:
             self.log_message(f"Ошибка сборки: {str(e)}")
@@ -1247,51 +1509,56 @@ class FM4MSGTool:
         if not txt_files:
             self.log_message(f"В папке {folder.name} нет TXT файлов")
             return
-        txt_cache = {}
         chunks_data = []
-        valid_txt_files = []
-
+        valid_files = []
         for txt_file in txt_files:
             try:
                 content = txt_file.read_text(encoding='utf-8')
             except Exception as e:
                 self.log_message(f"[X] Не удалось прочитать {txt_file.name}: {e}")
                 continue
-            txt_cache[txt_file] = content
-            sig_line = next((l for l in content.splitlines() if l.startswith("SIGNATURE: ")), "")
-            if "01FF" in sig_line:
-                chunk_data = parser.build_01ff(content)
-            elif "02FF" in sig_line:
-                chunk_data = parser.build_02ff(content)
-            else:
-                self.log_message(f"[!] Пропущен файл без корректной сигнатуры: {txt_file.name}")
-                continue
-            chunks_data.append(chunk_data)
-            valid_txt_files.append(txt_file)
-        if not valid_txt_files:
-            self.log_message(f"Нет валидных TXT-файлов в {folder.name} — пропуск")
+            if "01FF" in content:
+                try:
+                    chunk_data = parser.build_01ff(content)
+                    chunks_data.append(chunk_data)
+                    valid_files.append(txt_file)
+                except Exception as e:
+                    self.log_message(f"[X] Ошибка сборки 01FF {txt_file.name}: {e}")
+            elif "02FF" in content:
+                try:
+                    chunk_data = parser.build_02ff(content)
+                    chunks_data.append(chunk_data)
+                    valid_files.append(txt_file)
+                except Exception as e:
+                    self.log_message(f"[X] Ошибка сборки 02FF {txt_file.name}: {e}")
+        if not valid_files:
+            self.log_message(f"Нет валидных TXT-файлов в {folder.name}")
             return
         output_file = output_path / f"{folder.name}.msg"
         try:
+            offset_table_size = (len(chunks_data) + 1) * 4  # +1 для 0xFFFFFFFF
+            offsets = []
+            current_offset = 8 + offset_table_size  # сигнатура + размер + таблица
             with open(output_file, 'wb') as f:
                 f.write(b'MSG\x00')
                 f.write(struct.pack('<I', 0))
-                offset_table_start = f.tell()
-                current_offset = offset_table_start + (len(chunks_data) + 1) * 4  # +1 для 0xFFFFFFFF
                 for chunk in chunks_data:
                     f.write(struct.pack('<I', current_offset))
+                    offsets.append(current_offset)
                     current_offset += len(chunk)
+                
                 f.write(struct.pack('<I', 0xFFFFFFFF))
                 for chunk in chunks_data:
                     f.write(chunk)
                 final_size = f.tell()
                 f.seek(4)
                 f.write(struct.pack('<I', final_size))
-            self.log_message(f"Собран MSG файл: {output_file.name} ({final_size} байт)")
+            if self.log_showall_var.get():
+                self.log_message(f"Собран MSG файл: {output_file.name} ({final_size} байт)")
         except Exception as e:
             self.log_message(f"[X] Не удалось записать {output_file.name}: {e}")
             raise
-
+    
     def log_message(self, message):
         log_entry = f"[{datetime.now().strftime('%H:%M:%S')}] {message}"
         self.log_text.insert(tk.END, log_entry + "\n")
@@ -1392,7 +1659,7 @@ class FM4MSGTool:
         if self.mapping_modified:
             result = messagebox.askyesnocancel(
                 "Несохранённые изменения",
-                "В маппингах есть несохранённые изменения. Сохранить перед выходом?"
+                "В маппингах есть несохранённые изменения.\nСохранить маппинг в файл перед выходом?"
             )
             if result is True:
                 self.save_mapping_section("ALPH", self.alph_text)
