@@ -3,7 +3,7 @@ from tkinter import filedialog, messagebox
 import os
 import json
 
-MAIN_VERSION = "0.1"
+MAIN_VERSION = "0.2"
 SETTING_FILE = "text-width-checker-settings.json"
 
 class WidthCheckerApp:
@@ -624,6 +624,52 @@ class WidthCheckerApp:
         except Exception as e:
             messagebox.showerror("Ошибка", f"Не удалось создать шаблон словаря:\n{e}")
     
+    def show_context_menu(self, event):
+        """Показать контекстное меню при нажатии правой кнопки мыши"""
+        # Создаем контекстное меню
+        context_menu = tk.Menu(self.root, tearoff=0)
+        
+        # Функции для работы с буфером обмена
+        def cut_text():
+            try:
+                if self.text_area.selection_get():
+                    self.text_area.event_generate("<<Cut>>")
+            except tk.TclError:
+                pass
+        
+        def copy_text():
+            try:
+                if self.text_area.selection_get():
+                    self.text_area.event_generate("<<Copy>>")
+            except tk.TclError:
+                pass
+        
+        def paste_text():
+            self.text_area.event_generate("<<Paste>>")
+        
+        def delete_text():
+            try:
+                if self.text_area.selection_get():
+                    self.text_area.delete("sel.first", "sel.last")
+            except tk.TclError:
+                pass
+        
+        # Проверяем, есть ли выделенный текст
+        try:
+            has_selection = bool(self.text_area.selection_get())
+        except tk.TclError:
+            has_selection = False
+        
+        # Добавляем пункты меню
+        context_menu.add_command(label="Вырезать", command=cut_text, state=tk.NORMAL if has_selection else tk.DISABLED)
+        context_menu.add_command(label="Копировать", command=copy_text, state=tk.NORMAL if has_selection else tk.DISABLED)
+        context_menu.add_command(label="Вставить", command=paste_text)
+        context_menu.add_separator()
+        context_menu.add_command(label="Удалить", command=delete_text, state=tk.NORMAL if has_selection else tk.DISABLED)
+        
+        # Показываем меню в позиции курсора
+        context_menu.post(event.x_root, event.y_root)
+    
     def create_widgets(self):
         """Создание всех виджетов интерфейса"""
         # Верхняя панель с индикатором и навигацией
@@ -732,6 +778,9 @@ class WidthCheckerApp:
         
         v_scrollbar.config(command=self.text_area.yview)
         h_scrollbar.config(command=self.text_area.xview)
+        
+        # Привязываем событие правой кнопки мыши к контекстному меню
+        self.text_area.bind("<Button-3>", self.show_context_menu)
         
         # Настройка тегов для подсветки
         self.text_area.tag_config("error_part", background="red", foreground="white")
