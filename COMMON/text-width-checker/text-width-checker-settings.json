@@ -1,9 +1,0 @@
-{
-  "limit_width": 80,
-  "default_width": 8,
-  "dict_file": "widths.txt",
-  "font_size": 11,
-  "highlight_missing": false,
-  "window_state": "normal",
-  "window_geometry": "900x500+223+52"
-}
