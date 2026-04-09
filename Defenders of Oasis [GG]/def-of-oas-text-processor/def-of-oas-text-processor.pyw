@@ -8,9 +8,15 @@ import string
 import re
 import random
 
-MAIN_VERSION = "0.8"
+MAIN_VERSION = "0.9"
 MAIN_BG_COLOR = "#BEBEBE"
 CONSOLE_BG_COLOR = "#BBBBBB"
+
+WINDOW_SIZE = 8192
+LENGTHS = (11,10,9,8,7,6,5,4) # оригинальный алгоритм сжатия
+LENGTHS_EFFICIENCY = (11,10,9,8,7,6,5) # более эффективный алгоритм сжатия
+MAX_NUM_SKIPS = 20
+MAX_SKIP_NUMBERS = 100
 
 class TextProcessor:
     def __init__(self, root):
@@ -69,7 +75,7 @@ class TextProcessor:
         controls_frame = tk.Frame(root, bg=MAIN_BG_COLOR)
         controls_frame.pack(pady=5, anchor='w', padx=10, fill=tk.X)
         
-        self.debug_var = tk.IntVar()
+        self.debug_var = tk.IntVar(value=0)
         self.debug_check = tk.Checkbutton(controls_frame, text="Вывод подробных логов",
                     variable=self.debug_var, font=(None, 10, "bold"), 
                     bg=MAIN_BG_COLOR, activebackground=MAIN_BG_COLOR)
@@ -80,13 +86,21 @@ class TextProcessor:
                                            font=(None, 10, "bold"), textvariable=self.attempts_var)
         self.attempts_spinbox.pack(side=tk.LEFT, padx=(30, 5))
         
-        self.attempts_label = tk.Label(controls_frame, text="Количество попыток подбора", bg=MAIN_BG_COLOR, font=(None, 10, "bold"))
+        self.attempts_label = tk.Label(controls_frame, text="Количество попыток подбора", 
+                                            bg=MAIN_BG_COLOR, font=(None, 10, "bold"))
         self.attempts_label.pack(side=tk.LEFT, padx=(0, 10))
+        
+        self.efficiency_var = tk.IntVar(value=1)
+        self.efficiency_check = tk.Checkbutton(controls_frame, text="Улучшенное сжатие",
+                    variable=self.efficiency_var, font=(None, 10, "bold"), 
+                    bg=MAIN_BG_COLOR, activebackground=MAIN_BG_COLOR)
+        self.efficiency_check.pack(side=tk.LEFT)
         
         text_frame = tk.Frame(root, bg=MAIN_BG_COLOR)
         text_frame.pack(pady=5, fill=tk.BOTH, expand=True)
         
-        self.log_text = tk.Text(text_frame, wrap=tk.WORD, height=10, bg=CONSOLE_BG_COLOR, font=("Courier", 10, "bold"))
+        self.log_text = tk.Text(text_frame, wrap=tk.WORD, height=10, bg=CONSOLE_BG_COLOR, 
+                                font=("Courier", 10, "bold"))
         scrollbar = tk.Scrollbar(text_frame, orient=tk.VERTICAL, command=self.log_text.yview)
         self.log_text.configure(yscrollcommand=scrollbar.set)
         
@@ -202,7 +216,7 @@ class TextProcessor:
         data_len = len(data)
         markers = 0
         errors = 0
-        is_debug = self.debug_var.get
+        is_debug = bool(self.debug_var.get())
         
         len_map = {0:4, 1:4, 2:5, 3:5, 4:6, 5:6, 6:7, 7:7, 8:8,
                    9:8, 10:9, 11:9, 12:10, 13:10, 14:11, 15:11}
@@ -221,8 +235,7 @@ class TextProcessor:
                     b2 = data[i+2]
                     
                     if b1 == 0xFF and b2 == 0xFF:
-                        if is_debug():
-                            self.log_debug("decode_data: пропуск FFFFFF @" + format(i, '06X'))
+                        self.log_debug("decode_data: пропуск FFFFFF @" + format(i, '06X'))
                         res_append(0xFF)
                         res_append(0xFF)
                         res_append(0xFF)
@@ -250,7 +263,7 @@ class TextProcessor:
                         continue
                     
                     res_extend(data[src_pos:src_pos+length])
-                    if is_debug():
+                    if is_debug:
                         self.log_debug(" #{:<8}x{:<9}xFF{:02X}{:02X}   {:<9}{:<8} {:<13}x{:06X}       '{}'".format(markers, format(i, '06X'), b1, b2, length, offset, multiplier, src_pos, ''.join(chr(b) if 32 <= b <= 126 else ("[" + format(b, '02X') + "]") for b in data[src_pos:src_pos+length])))
                     i += 3
                 else:
@@ -266,27 +279,6 @@ class TextProcessor:
         self.log_info("Декодировано: ссылок=" + str(markers) + ", ошибок=" + str(errors))
         self.log_info("Размер выходных данных: " + str(len(result)) + " байт")
         return bytes(result)
-    
-    def create_reference_bytes(self, offset, length):
-        """Создает ссылку на основе смещения и длины"""
-        offset -= 1
-        multiplier = offset >> 8
-        remainder = 0xFF - (offset & 0xFF)
-        
-        len_map = {4:0, 5:2, 6:4, 7:6, 8:8, 9:10, 10:12, 11:14}
-        
-        mult_map = {31:0, 30:1, 29:2, 28:3, 27:4, 26:5, 25:6, 24:7, 23:8, 
-                    22:9, 21:10, 20:11, 19:12, 18:13, 17:14, 16:15,
-                    15:0, 14:1, 13:2, 12:3, 11:4, 10:5, 9:6, 8:7,
-                    7:8, 6:9, 5:10, 4:11, 3:12, 2:13, 1:14, 0:15}
-        
-        high = len_map[length]
-        low = mult_map[multiplier]
-        
-        if multiplier < 16:
-            high += 1
-        
-        return bytes([0xFF, remainder & 0xFF, (high << 4) | low]), multiplier
     
     def encode_data(self, data, skip_pattern=None):
         """Сжимает данные с возможностью пропуска указанных ссылок по их номеру"""
@@ -305,41 +297,56 @@ class TextProcessor:
         markers = 0
         current_marker_number = 0
         skipped_markers = 0
-        max_window_size = 8192
+        window_size = WINDOW_SIZE
 
         res_append = result.append
         res_extend = result.extend
-        create_ref = self.create_reference_bytes
-        is_debug = self.debug_var.get
+        is_debug = bool(self.debug_var.get())
         log_debug = self.log_debug
+        
+        if self.efficiency_var.get():
+            lengths = LENGTHS_EFFICIENCY
+        else:
+            lengths = LENGTHS
 
         hash_table = {}
         src_pos_mapping = []
+        
+        len_map = {4:0, 5:2, 6:4, 7:6, 8:8, 9:10, 10:12, 11:14}
+                
+        mult_map = {31:0, 30:1, 29:2, 28:3, 27:4, 26:5, 25:6, 24:7, 23:8, 
+                    22:9, 21:10, 20:11, 19:12, 18:13, 17:14, 16:15,
+                    15:0, 14:1, 13:2, 12:3, 11:4, 10:5, 9:6, 8:7,
+                    7:8, 6:9, 5:10, 4:11, 3:12, 2:13, 1:14, 0:15}
         
         while i < data_len:
             max_length = 0
             best_offset = 0
             best_src_pos = 0
             res_len = len(result)
-            start_pos = max(0, res_len - max_window_size)
+            start_pos = max(0, res_len - window_size)
 
-            for length in range(11, 3, -1):
+            for length in lengths:
                 if i + length > data_len:
                     continue
 		
-                has_zero = False
-                for k in range(length - 1):
-                    if data[i + k] == 0x00:
-                        has_zero = True
-                        break
+                if 0x00 in data[i:i + length - 1]:
+                    continue 
+                # has_zero = False
+                # for k in range(length - 1):
+                    # if data[i + k] == 0x00:
+                        # has_zero = True
+                        # break
                 
-                if has_zero:
-                    continue
+                # if has_zero:
+                    # continue
                 
-                key = tuple(data[i:i+2])
+                key = (data[i] << 8) | data[i+1]
                 candidates = hash_table.get(key, [])
 
-                for pos in reversed(candidates):
+                for idx in range(len(candidates)-1, -1, -1):
+                    pos = candidates[idx]
+                    
                     if pos < start_pos:
                         continue
                     match = True
@@ -351,7 +358,7 @@ class TextProcessor:
                         max_length = length
                         best_offset = res_len - pos
                         
-                        if is_debug():
+                        if is_debug:
                             best_src_pos = src_pos_mapping[pos] if pos < len(src_pos_mapping) else 0
                         
                         break
@@ -369,7 +376,7 @@ class TextProcessor:
                     # Вместо ссылки записываем сырые данные
                     for j in range(length):
                         res_append(data[i + j])
-                        if is_debug():
+                        if is_debug:
                             src_pos_mapping.append(i + j)
                         
                         # Обновляем хеш-таблицу для сырых байтов
@@ -377,38 +384,33 @@ class TextProcessor:
                             key = tuple(result[res_len + j: res_len + j + 2])
                             hash_table.setdefault(key, []).append(res_len + j)
                     
-                    if is_debug():
-                        raw_fragment = data[i:i+length]
-                        raw_text = []
-                        for b in raw_fragment:
-                            if 32 <= b <= 126:
-                                raw_text.append(chr(b))
-                            else:
-                                raw_text.append('[' + '{:02X}'.format(b) + ']')
-                        self.log_debug(" #{} (SKIP) x{:06X}   RAW        {:<9}{:<8} {:<13}x{:06X}       '{}'".format(current_marker_number, i, length, offset, 0, i, ''.join(raw_text)))
-                    
                     i += length
                     skipped_markers += 1
                     continue
                 
-                ref_bytes, multiplier = create_ref(offset, length)
+                # Создает ссылку на основе смещения и длины
+                temp_offset = offset - 1
+                multiplier = temp_offset >> 8
+                ref_bytes = bytes([0xFF, (0xFF - (temp_offset & 0xFF)) & 0xFF, 
+                   ((len_map[length] + (multiplier < 16)) << 4) | mult_map[multiplier]])
+                
                 res_extend(ref_bytes)
                 markers += 1
                 
-                if is_debug():
+                if is_debug:
                     for j in range(length):
                         src_pos_mapping.append(i + j)
                     
-                    compressed_fragment = data[i:i+length]
-                    compressed_text = []
+                    raw_fragment = data[i:i+length]
+                    raw_text = []
                     
-                    for b in compressed_fragment:
+                    for b in raw_fragment:
                         if 32 <= b <= 126:
-                            compressed_text.append(chr(b))
+                            raw_text.append(chr(b))
                         else:
-                            compressed_text.append('[' + '{:02X}'.format(b) + ']')
+                            raw_text.append('[' + '{:02X}'.format(b) + ']')
                     
-                    self.log_debug(" #{:<8}x{:<9}x{}     {:<9}{:<8} {:<13}x{:06X}       '{}'".format(markers, format(i, '06X'), "".join(format(x, '02X') for x in ref_bytes), length, offset, multiplier, best_src_pos, ''.join(compressed_text)))
+                    self.log_debug(" #{:<8}x{:<9}x{}     {:<9}{:<8} {:<13}x{:06X}       '{}'".format(markers, format(i, '06X'), "".join(format(x, '02X') for x in ref_bytes), length, offset, multiplier, best_src_pos, ''.join(raw_text)))
                 
                 i += length
                     
@@ -420,11 +422,11 @@ class TextProcessor:
 
             res_append(data[i])
             
-            if is_debug():
+            if is_debug:
                 src_pos_mapping.append(i)
             
             if i + 1 < data_len:
-                key = tuple(data[i:i+2])
+                key = (data[i] << 8) | data[i+1]
                 hash_table.setdefault(key, []).append(res_len)
             i += 1
 
@@ -499,13 +501,16 @@ class TextProcessor:
             best_skipped = 0
             self.log_info("  Размер: " + str(default_size) + " байт (эталон)")
             
+            max_num_skips = MAX_NUM_SKIPS
+            max_skip_numbers = MAX_SKIP_NUMBERS
+            
             for attempt in range(2, attempts + 1):
                 # Генерируем случайное количество пропускаемых ссылок (от 1 до 20)
-                num_skips = random.randint(1, 20)
+                num_skips = random.randint(1, max_num_skips)
                 # Генерируем случайные номера ссылок для пропуска (от 1 до 150)
                 skip_numbers = set()
                 while len(skip_numbers) < num_skips:
-                    skip_numbers.add(random.randint(1, 150))
+                    skip_numbers.add(random.randint(1, max_skip_numbers))
                 
                 self.log_info("--- Попытка " + str(attempt) + "/" + str(attempts) +  " ---")
                 
@@ -577,7 +582,9 @@ class TextProcessor:
         if not filename:
             self.log_info("Операция отменена пользователем")
             return
-            
+        
+        self.info_label.configure(text="Интерфейс может\nне отвечать,\nно программа работает.")
+        
         self.error_count = 0
         self.warning_count = 0
         self.marker_count = 0
@@ -600,6 +607,8 @@ class TextProcessor:
                 self.decoded_data = decoded_raw
                 out_file = filename + "-decompressed.bin"
             
+            self.info_label.configure(text="")
+            
             if self.decoded_data:
                 with open(out_file, 'wb') as f:
                     f.write(self.decoded_data)
@@ -615,6 +624,7 @@ class TextProcessor:
                 messagebox.showinfo("Готово", result_msg)
             
         except Exception as e:
+            self.info_label.configure(text="")
             self.log_error("Ошибка: " + str(e))
             messagebox.showerror("Ошибка", str(e))
     
@@ -628,6 +638,7 @@ class TextProcessor:
             self.log_info("Операция отменена пользователем")
             return
         
+        self.info_label.configure(text="Интерфейс может\nне отвечать,\nно программа работает.")
         is_text = filename.lower().endswith('.txt')
         
         self.error_count = 0
@@ -656,9 +667,11 @@ class TextProcessor:
             with open(out_file, 'wb') as f:
                 f.write(compressed_data)
             
+            self.info_label.configure(text="")
             self.log_info("Готово! Файл сжат и сохранён")
             result_msg = "Сжатый размер: " + str(len(compressed_data)) + " байт\n"
-            result_msg += "Коэффициент сжатия: " + format((1 - len(compressed_data)/file_size)*100, ".1f") + "%\n"
+            result_msg += "Коэффициент сжатия: " + format(
+                            (1 - len(compressed_data)/file_size)*100, ".1f") + "%\n"
             result_msg += "Ссылок использовано: " + str(self.marker_count) + "\n"
             result_msg += "Сохранено в: " + out_file + "\n\n"
             self.log_to_console("="*50)
@@ -666,6 +679,7 @@ class TextProcessor:
             messagebox.showinfo("Сжатие завершено", result_msg)
             
         except Exception as e:
+            self.info_label.configure(text="")
             self.log_error("Ошибка: " + str(e))
             messagebox.showerror("Ошибка", str(e))
         
@@ -673,3 +687,58 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = TextProcessor(root)
     root.mainloop()
+
+
+"""
+***********************************************************************
+ФОРМАТ ССЫЛКИ (FF D9 1F) 3 байта
+
+Структура ссылки:
+    FF       D9        1F
+    ||       ||        ||-- множитель (зависит от чётности полубайта длины)
+    |        |         |-- длина сегмента
+    |        |-- остаток смещения
+    |-- маркер начала ссылки
+
+***********************************************************************
+ФОРМУЛА ВЫЧИСЛЕНИЯ СМЕЩЕНИЯ:
+
+    смещение = адрес_маркера - (0xFF - остаток_смещения + множитель * 256 + 1)
+
+***********************************************************************
+ТАБЛИЦА ДЛИНЫ СЕГМЕНТА (полубайт длины -> кол-во байт):
+
+    0x0 -> 4 байта      0x8 -> 8 байт
+    0x1 -> 4 байта      0x9 -> 8 байт
+    0x2 -> 5 байт       0xA -> 9 байт
+    0x3 -> 5 байт       0xB -> 9 байт
+    0x4 -> 6 байт       0xC -> 10 байт
+    0x5 -> 6 байт       0xD -> 10 байт
+    0x6 -> 7 байт       0xE -> 11 байт
+    0x7 -> 7 байт       0xF -> 11 байт
+
+***********************************************************************
+ТАБЛИЦА МНОЖИТЕЛЕЙ (полубайт множителя -> множитель):
+
+    Значение   |  Нечётный полубайт  |  Чётный полубайт
+               |        длины        |      длины
+    -----------|---------------------|------------------
+    0x0        |         15          |        31
+    0x1        |         14          |        30
+    0x2        |         13          |        29
+    0x3        |         12          |        28
+    0x4        |         11          |        27
+    0x5        |         10          |        26
+    0x6        |          9          |        25
+    0x7        |          8          |        24
+    0x8        |          7          |        23
+    0x9        |          6          |        22
+    0xA        |          5          |        21
+    0xB        |          4          |        20
+    0xC        |          3          |        19
+    0xD        |          2          |        18
+    0xE        |          1          |        17
+    0xF        |          0          |        16
+
+***********************************************************************
+"""
