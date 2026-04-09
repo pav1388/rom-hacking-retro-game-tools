@@ -5,6 +5,8 @@
 
 - Vanguard Bandits [PSX]
 
+- Defenders of Oasis [GG]
+
 ## Разное
 - [Программа для контроля ширины строк текста ](https://github.com/pav1388/text-width-checker)
   
