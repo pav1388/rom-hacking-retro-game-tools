@@ -8,15 +8,22 @@ import string
 import re
 import random
 
-MAIN_VERSION = "0.9"
+MAIN_VERSION = "0.10.1"
 MAIN_BG_COLOR = "#BEBEBE"
 CONSOLE_BG_COLOR = "#BBBBBB"
 
 WINDOW_SIZE = 8192
 LENGTHS = (11,10,9,8,7,6,5,4) # оригинальный алгоритм сжатия
-LENGTHS_EFFICIENCY = (11,10,9,8,7,6,5) # более эффективный алгоритм сжатия
-MAX_NUM_SKIPS = 20
-MAX_SKIP_NUMBERS = 100
+LENGTHS_EFFICIENCY = (11,10,9,8,7,6,5) # более эффективный пропуск коротких фрагментов
+LEN_MAP_ENCODE = {4:0, 5:2, 6:4, 7:6, 8:8, 9:10, 10:12, 11:14}
+MULT_MAP_ENCODE = {31:0, 30:1, 29:2, 28:3, 27:4, 26:5, 25:6, 24:7, 23:8, 
+                   22:9, 21:10, 20:11, 19:12, 18:13, 17:14, 16:15,
+                   15:0, 14:1, 13:2, 12:3, 11:4, 10:5, 9:6, 8:7,
+                   7:8, 6:9, 5:10, 4:11, 3:12, 2:13, 1:14, 0:15}
+LEN_MAP_DECODE = {0:4, 1:4, 2:5, 3:5, 4:6, 5:6, 6:7, 7:7, 8:8,
+                    9:8, 10:9, 11:9, 12:10, 13:10, 14:11, 15:11}
+MULT_MAP_DECODE =  {0:15, 1:14, 2:13, 3:12, 4:11, 5:10, 6:9, 7:8,
+                    8:7, 9:6, 10:5, 11:4, 12:3, 13:2, 14:1, 15:0}
 
 class TextProcessor:
     def __init__(self, root):
@@ -40,10 +47,12 @@ class TextProcessor:
                     font=(None, 10, "bold"))
         self.encode_bin_btn.pack(side=tk.LEFT, padx=5)
         
-        self.info_label = tk.Label(btn_frame1, text="", bg=MAIN_BG_COLOR,
-                    fg="#A40026", font=(None, 11, "bold"))
-        self.info_label.pack(side=tk.LEFT, padx=(10, 5))
-	
+        self.compression_plus_var = tk.IntVar(value=1)
+        self.compression_plus_check = tk.Checkbutton(btn_frame1, text="Сжатие ++",
+                    variable=self.compression_plus_var, font=(None, 10, "bold"), 
+                    bg=MAIN_BG_COLOR, activebackground=MAIN_BG_COLOR)
+        self.compression_plus_check.pack(side=tk.LEFT)
+        
         self.exit_btn = tk.Button(btn_frame1, text="Выход",
                     command=self.root.destroy, width=12, height=3,
                     bg="#ff6b6b", fg="black", activebackground="#ee5253", activeforeground="black",
@@ -59,11 +68,15 @@ class TextProcessor:
                     font=(None, 10, "bold"))
         self.decode_txt_btn.pack(side=tk.LEFT, padx=5)
 
-        self.best_compress_btn = tk.Button(btn_frame2, text="Случайный подбор\nлучшего сжатия",
+        self.best_compress_btn = tk.Button(btn_frame2, text="Эвристическое\nсжатие",
                     command=self.find_best_compression, width=20, height=3,
                     bg="#f7dc6f", fg="black", activebackground="#f4d03f", activeforeground="black",
                     font=(None, 10, "bold"))
         self.best_compress_btn.pack(side=tk.LEFT, padx=5)
+        
+        self.info_label = tk.Label(btn_frame2, text="", bg=MAIN_BG_COLOR,
+                    fg="#A40026", font=(None, 11, "bold"))
+        self.info_label.pack(side=tk.LEFT, padx=(10, 5))
 
         self.clear_logs_btn = tk.Button(btn_frame2, text="Очистить\nлоги",
                     command=self.clear_logs, width=12, height=3,
@@ -71,7 +84,6 @@ class TextProcessor:
                     font=(None, 10, "bold"))
         self.clear_logs_btn.pack(side=tk.RIGHT, padx=5)
         
-        # Объединение checkbox и spinbox в одной строке
         controls_frame = tk.Frame(root, bg=MAIN_BG_COLOR)
         controls_frame.pack(pady=5, anchor='w', padx=10, fill=tk.X)
         
@@ -81,20 +93,14 @@ class TextProcessor:
                     bg=MAIN_BG_COLOR, activebackground=MAIN_BG_COLOR)
         self.debug_check.pack(side=tk.LEFT)
         
-        self.attempts_var = tk.StringVar(value="50")
-        self.attempts_spinbox = tk.Spinbox(controls_frame, from_=2, to=100000, width=6, 
-                                           font=(None, 10, "bold"), textvariable=self.attempts_var)
-        self.attempts_spinbox.pack(side=tk.LEFT, padx=(30, 5))
+        self.depth_var = tk.StringVar(value="100")
+        self.depth_spinbox = tk.Spinbox(controls_frame, from_=10, to=10000, width=6, 
+                                           font=(None, 10, "bold"), textvariable=self.depth_var)
+        self.depth_spinbox.pack(side=tk.LEFT, padx=(30, 5))
         
-        self.attempts_label = tk.Label(controls_frame, text="Количество попыток подбора", 
+        self.depth_label = tk.Label(controls_frame, text="Глубина эвристики (больше = лучше, но дольше)", 
                                             bg=MAIN_BG_COLOR, font=(None, 10, "bold"))
-        self.attempts_label.pack(side=tk.LEFT, padx=(0, 10))
-        
-        self.efficiency_var = tk.IntVar(value=1)
-        self.efficiency_check = tk.Checkbutton(controls_frame, text="Улучшенное сжатие",
-                    variable=self.efficiency_var, font=(None, 10, "bold"), 
-                    bg=MAIN_BG_COLOR, activebackground=MAIN_BG_COLOR)
-        self.efficiency_check.pack(side=tk.LEFT)
+        self.depth_label.pack(side=tk.LEFT, padx=(0, 10))
         
         text_frame = tk.Frame(root, bg=MAIN_BG_COLOR)
         text_frame.pack(pady=5, fill=tk.BOTH, expand=True)
@@ -217,14 +223,9 @@ class TextProcessor:
         markers = 0
         errors = 0
         is_debug = bool(self.debug_var.get())
+        len_map = LEN_MAP_DECODE
+        mult_map = MULT_MAP_DECODE
         
-        len_map = {0:4, 1:4, 2:5, 3:5, 4:6, 5:6, 6:7, 7:7, 8:8,
-                   9:8, 10:9, 11:9, 12:10, 13:10, 14:11, 15:11}
-        mult_map_odd = {0:15, 1:14, 2:13, 3:12, 4:11, 5:10, 6:9, 7:8,
-                        8:7, 9:6, 10:5, 11:4, 12:3, 13:2, 14:1, 15:0}
-        mult_map_even = {0:31, 1:30, 2:29, 3:28, 4:27, 5:26, 6:25, 7:24,
-                         8:23, 9:22, 10:21, 11:20, 12:19, 13:18, 14:17, 15:16}
-
         res_append = result.append
         res_extend = result.extend
 
@@ -248,9 +249,9 @@ class TextProcessor:
                     length = len_map[high]
                     
                     if high & 1:
-                        multiplier = mult_map_odd[low]
+                        multiplier = mult_map[low]
                     else:
-                        multiplier = mult_map_even[low]
+                        multiplier = mult_map[low] + 16
                     
                     offset = (multiplier << 8) + (b1 ^ 0xFF) + 1
                     src_pos = i - offset
@@ -282,11 +283,13 @@ class TextProcessor:
     
     def encode_data(self, data, skip_pattern=None):
         """Сжимает данные с возможностью пропуска указанных ссылок по их номеру"""
+        compression_plus = bool(self.compression_plus_var.get())
+        
         if skip_pattern is None:
             skip_pattern = set()
         
         if not skip_pattern:
-            self.log_info("Начало кодирования")
+            self.log_info("Начало кодирования" + (" (сжатие ++)" if compression_plus else ""))
             self.log_info("Размер исходных данных: " + str(len(data)) + " байт")
             self.log_info("Подождите ...")
             self.log_debug(" number | address | link      | length | offset | multiplier | src_address | text")
@@ -304,20 +307,16 @@ class TextProcessor:
         is_debug = bool(self.debug_var.get())
         log_debug = self.log_debug
         
-        if self.efficiency_var.get():
+        if compression_plus:
             lengths = LENGTHS_EFFICIENCY
         else:
             lengths = LENGTHS
-
+            
+        min_length = min(lengths)
         hash_table = {}
         src_pos_mapping = []
-        
-        len_map = {4:0, 5:2, 6:4, 7:6, 8:8, 9:10, 10:12, 11:14}
-                
-        mult_map = {31:0, 30:1, 29:2, 28:3, 27:4, 26:5, 25:6, 24:7, 23:8, 
-                    22:9, 21:10, 20:11, 19:12, 18:13, 17:14, 16:15,
-                    15:0, 14:1, 13:2, 12:3, 11:4, 10:5, 9:6, 8:7,
-                    7:8, 6:9, 5:10, 4:11, 3:12, 2:13, 1:14, 0:15}
+        len_map = LEN_MAP_ENCODE
+        mult_map = MULT_MAP_ENCODE
         
         while i < data_len:
             max_length = 0
@@ -332,14 +331,6 @@ class TextProcessor:
 		
                 if 0x00 in data[i:i + length - 1]:
                     continue 
-                # has_zero = False
-                # for k in range(length - 1):
-                    # if data[i + k] == 0x00:
-                        # has_zero = True
-                        # break
-                
-                # if has_zero:
-                    # continue
                 
                 key = (data[i] << 8) | data[i+1]
                 candidates = hash_table.get(key, [])
@@ -368,7 +359,7 @@ class TextProcessor:
             length = max_length
             offset = best_offset
 
-            if length >= 4:
+            if length >= min_length:
                 current_marker_number += 1
                 
                 # Проверяем, нужно ли пропустить эту ссылку
@@ -387,6 +378,28 @@ class TextProcessor:
                     i += length
                     skipped_markers += 1
                     continue
+                
+                # Ленивый алгоритм
+                if compression_plus and i + 1 < data_len:
+                    # Проверяем, не будет ли следующая позиция лучше
+                    next_len, next_offset, next_src = self._find_best_match(
+                        data, i+1, result, lengths, hash_table, src_pos_mapping, window_size
+                    )
+                    
+                    if next_len > length:
+                        # Текущий байт лучше вывести как есть, а ссылку сделать со следующей позиции
+                        res_append(data[i])
+                        if is_debug:
+                            src_pos_mapping.append(i)
+                        
+                        # Обновляем хеш-таблицу
+                        if i + 1 < data_len:
+                            key = (data[i] << 8) | data[i+1]
+                            hash_table.setdefault(key, []).append(res_len)
+                        
+                        i += 1
+                        current_marker_number -= 1
+                        continue
                 
                 # Создает ссылку на основе смещения и длины
                 temp_offset = offset - 1
@@ -437,24 +450,65 @@ class TextProcessor:
         
         return bytes(result)
     
+    def _find_best_match(self, data, i, result, lengths, hash_table, src_pos_mapping, window_size):
+        """Метод для поиска лучшего совпадения"""
+        max_length = 0
+        best_offset = 0
+        best_src_pos = 0
+        res_len = len(result)
+        start_pos = max(0, res_len - window_size)
+        
+        for length in lengths:
+            if i + length > len(data):
+                continue
+            
+            if 0x00 in data[i:i + length - 1]:
+                continue
+            
+            key = (data[i] << 8) | data[i+1]
+            candidates = hash_table.get(key, [])
+            
+            for idx in range(len(candidates)-1, -1, -1):
+                pos = candidates[idx]
+                
+                if pos < start_pos:
+                    continue
+                
+                match = True
+                for k in range(length):
+                    if pos + k >= res_len or result[pos + k] != data[i + k]:
+                        match = False
+                        break
+                
+                if match:
+                    max_length = length
+                    best_offset = res_len - pos
+                    if pos < len(src_pos_mapping):
+                        best_src_pos = src_pos_mapping[pos]
+                    break
+            
+            if max_length > 0:
+                break
+        
+        return max_length, best_offset, best_src_pos
+    
     def find_best_compression(self):
-        """Подбирает наилучшее сжатие путем перебора случайных комбинаций пропуска ссылок"""
-        self.log_info("=== ПОДБОР ЛУЧШЕГО СЖАТИЯ ===")
+        self.log_info("=== ЭВРИСТИЧЕСКИЙ ПОДБОР ЛУЧШЕГО СЖАТИЯ ===")
         
         try:
-            attempts = int(self.attempts_spinbox.get())
-            if attempts < 2:
-                attempts = 2
-            elif attempts > 100000:
-                attempts = 100000
-                self.log_warning("Количество попыток ограничено 100 000")
+            depth = int(self.depth_spinbox.get())
+            if depth < 10:
+                depth = 10
+            elif depth > 10000:
+                depth = 10000
+                self.log_warning("Количество попыток ограничено 10000")
         except ValueError:
-            self.log_error("Неверное значение. Используется 50 попыток")
-            attempts = 50
+            self.log_error("Неверное значение. Используется 100 ссылок")
+            depth = 100
         
-        self.log_info("Количество попыток: " + str(attempts))
+        self.log_info("Глубина поиска: " + str(depth) + " ссылок")
         
-        filename = filedialog.askopenfilename(title="Выберите файл для подбора сжатия", 
+        filename = filedialog.askopenfilename(title="Выберите файл для сжатия", 
                                                filetypes=[("All files", "*.*")])
         if not filename:
             self.log_info("Операция отменена пользователем")
@@ -465,11 +519,9 @@ class TextProcessor:
         self.log_info("Файл: " + os.path.basename(filename) + 
                      " (" + str(file_size) + " bytes)")
         
-        # Определяем тип файла (текстовый или бинарный) по расширению
         is_text = filename.lower().endswith('.txt')
         
         try:
-            # Читаем данные
             if is_text:
                 with open(filename, 'r', encoding='utf-8') as f:
                     text = f.read()
@@ -479,88 +531,97 @@ class TextProcessor:
                 with open(filename, 'rb') as f:
                     data = f.read()
             
-            self.log_info("Начальные данные: " + str(len(data)) + " байт")
-            
             old_debug = self.debug_var.get()
             self.debug_var.set(0)
             
-            best_data = None
-            best_size = float('inf')
-            best_pattern = None
-            best_markers = 0
-            best_skipped = 0
-            
-            # Эталонное сжатие
-            self.log_info("\n--- Попытка 1/" + str(attempts) + " (ЭТАЛОН) ---")
+            self.log_info("Шаг 1: Эталонное сжатие...")
             compressed_default = self.encode_data(data, skip_pattern=set())
             default_size = len(compressed_default)
             best_size = default_size
             best_data = compressed_default
-            best_pattern = set()
-            best_markers = self.marker_count
-            best_skipped = 0
-            self.log_info("  Размер: " + str(default_size) + " байт (эталон)")
+            best_skips = set()
             
-            max_num_skips = MAX_NUM_SKIPS
-            max_skip_numbers = MAX_SKIP_NUMBERS
+            self.log_info("  Эталонный размер: " + str(default_size) + " байт")
+            self.log_info("Шаг 2: Эвристический поиск...")
             
-            for attempt in range(2, attempts + 1):
-                # Генерируем случайное количество пропускаемых ссылок (от 1 до 20)
-                num_skips = random.randint(1, max_num_skips)
-                # Генерируем случайные номера ссылок для пропуска (от 1 до 150)
-                skip_numbers = set()
-                while len(skip_numbers) < num_skips:
-                    skip_numbers.add(random.randint(1, max_skip_numbers))
+            all_references = self.get_all_references(data)
+            
+            if not all_references:
+                self.log_warning("Ссылки не найдены, улучшение невозможно")
+                self.info_label.configure(text="")
+                messagebox.showinfo("Результат", "Ссылки не найдены, улучшение невозможно")
+                return
+            
+            current_skips = set()
+            current_data = compressed_default
+            
+            for ref_num in sorted(all_references.keys())[:depth]:
+                test_skips = current_skips | {ref_num}
+                test_compressed = self.encode_data(data, skip_pattern=test_skips)
+                test_size = len(test_compressed)
                 
-                self.log_info("--- Попытка " + str(attempt) + "/" + str(attempts) +  " ---")
-                
-                # Сжимаем с пропуском указанных ссылок
-                compressed = self.encode_data(data, skip_pattern=skip_numbers)
-                compressed_size = len(compressed)
-                
-                if compressed_size < best_size:
-                    best_size = compressed_size
-                    best_data = compressed
-                    best_pattern = skip_numbers
-                    best_markers = self.marker_count
-                    best_skipped = num_skips
-                    self.log_info("        >>> НОВЫЙ РЕКОРД! Размер: " + str(best_size) + " байт (улучшение на " + 
-                                 str(default_size - best_size) + " байт)")
+                if test_size < best_size:
+                    best_size = test_size
+                    best_data = test_compressed
+                    best_skips = test_skips
+                    current_skips = test_skips
+                    improvement = default_size - test_size
+                    self.log_info("  [+] #" + str(ref_num) + "/" + str(depth) + ": " + str(improvement) + 
+                                    " байт (всего " + str(len(current_skips)) + " пропущено)")
                 else:
-                    improvement = default_size - compressed_size
-                    if improvement > 0:
-                        self.log_info("        Размер: " + str(compressed_size) + " байт (лучше на " + 
-                                     str(improvement) + " байт)")
-                    else:
-                        self.log_info("        Размер: " + str(compressed_size) + " байт (хуже на " + 
-                                     str(compressed_size - default_size) + " байт)")
+                    if len(current_skips) > 0:
+                        temp_skips = set(list(current_skips)[:-1]) | {ref_num}
+                        test_compressed = self.encode_data(data, skip_pattern=temp_skips)
+                        test_size = len(test_compressed)
+                        
+                        if test_size < best_size:
+                            best_size = test_size
+                            best_data = test_compressed
+                            best_skips = temp_skips
+                            current_skips = temp_skips
+                            improvement = default_size - test_size
+                            self.log_info("  [~] Замена #" + str(ref_num) + ": " + str(improvement) + " байт")
+            
+            self.log_info("Шаг 3: Оптимизация...")
+            optimized = False
+            for ref_num in list(best_skips):
+                test_skips = best_skips - {ref_num}
+                test_compressed = self.encode_data(data, skip_pattern=test_skips)
+                test_size = len(test_compressed)
+                
+                if test_size <= best_size:
+                    best_size = test_size
+                    best_data = test_compressed
+                    best_skips = test_skips
+                    optimized = True
+                    self.log_info("  [-] Удален пропуск #" + str(ref_num) + ", размер не изменился")
             
             self.debug_var.set(old_debug)
             self.info_label.configure(text="")
             
-            # Сохраняем лучший результат
             if best_data:
                 out_file = filename + "-best-compressed.bin"
                 with open(out_file, 'wb') as f:
                     f.write(best_data)
                 
+                improvement = default_size - best_size
                 compression_ratio = (1 - best_size / file_size) * 100
                 default_ratio = (1 - default_size / file_size) * 100
                 
-                result_msg = "Подбор сжатия завершен!\n\n"
-                result_msg += "Лучший результат:\n"
-                result_msg += "  Сжатый размер: " + str(best_size) + " байт\n"
-                result_msg += "  Улучшение: " + str(default_size - best_size) + " байт (" + \
-                             format((1 - best_size/default_size)*100, ".1f") + "%)\n"
-                result_msg += "  Коэффициент сжатия: " + format(compression_ratio, ".1f") + "%\n"
-                result_msg += "  Использовано ссылок: " + str(best_markers) + "\n"
-                result_msg += "  Пропущенно ссылок: " + str(best_skipped) + "\n"
-                result_msg += "  Пропущенные ссылки: " + (str(sorted(best_pattern)) if best_pattern else "нет") + "\n\n"
-                result_msg += "Для сравнения (эталон без пропуска):\n"
+                result_msg = "ЭВРИСТИЧЕСКИЙ АЛГОРИТМ ЗАВЕРШЕН\n\n"
+                result_msg += "РЕЗУЛЬТАТ:\n"
+                result_msg += "  Размер: " + str(best_size) + " байт\n"
+                result_msg += "  Коэф. сжатия: " + format(compression_ratio, '.1f') + "%\n"
+                result_msg += "  Улучшение: " + str(improvement) + " байт"
+                if default_size > 0:
+                    result_msg += " (" + format((1 - best_size/default_size)*100, '.1f') + "%)\n"
+                result_msg += "  Пропущено ссылок: " + str(len(best_skips)) + "\n"
+                if best_skips:
+                    result_msg += "  Номера: " + str(sorted(best_skips)) + "\n"
+                result_msg += "\nЭТАЛОН (без пропуска):\n"
                 result_msg += "  Размер: " + str(default_size) + " байт\n"
-                result_msg += "  Коэффициент сжатия: " + format(default_ratio, ".1f") + "%\n\n"
-                result_msg += "Перебрано вариантов: " + str(attempts) + "\n"
-                result_msg += "Сохранено в: " + out_file
+                result_msg += "  Коэф. сжатия: " + format(default_ratio, '.1f') + "%\n\n"
+                result_msg += "Сохранено: " + out_file
                 
                 self.log_info(result_msg)
                 messagebox.showinfo("Подбор сжатия завершен", result_msg)
@@ -572,6 +633,98 @@ class TextProcessor:
             self.info_label.configure(text="")
             self.log_error("Ошибка: " + str(e))
             messagebox.showerror("Ошибка", str(e))
+
+    def get_all_references(self, data):
+        """Получает словарь со всеми ссылками и их длинами"""
+        self.log_info("Анализ ссылок в данных...")
+        
+        references = {}
+        window_size = WINDOW_SIZE
+        len_map = LEN_MAP_ENCODE
+        mult_map = MULT_MAP_ENCODE
+        compression_plus = bool(self.compression_plus_var.get())
+        lengths = LENGTHS_EFFICIENCY if compression_plus else LENGTHS
+        
+        result = bytearray()
+        i = 0
+        data_len = len(data)
+        ref_counter = 0
+        
+        hash_table = {}
+        min_length = min(lengths)
+        
+        while i < data_len:
+            max_length = 0
+            best_offset = 0
+            res_len = len(result)
+            start_pos = max(0, res_len - window_size)
+            
+            # Ищем лучшую ссылку
+            for length in lengths:
+                if i + length > data_len:
+                    continue
+                
+                if 0x00 in data[i:i + length - 1]:
+                    continue
+                
+                key = (data[i] << 8) | data[i+1]
+                candidates = hash_table.get(key, [])
+                
+                for pos in reversed(candidates):
+                    if pos < start_pos:
+                        continue
+                    
+                    match = True
+                    for k in range(length):
+                        if pos + k >= res_len or result[pos + k] != data[i + k]:
+                            match = False
+                            break
+                    
+                    if match:
+                        max_length = length
+                        best_offset = res_len - pos
+                        break
+                
+                if max_length > 0:
+                    break
+            
+            if max_length >= min_length:
+                ref_counter += 1
+                references[ref_counter] = {
+                    'position': i,
+                    'length': max_length,
+                    'offset': best_offset
+                }
+                
+                # Добавляем ссылку в результат
+                temp_offset = best_offset - 1
+                multiplier = temp_offset >> 8
+                
+                
+                ref_bytes = bytes([0xFF, (0xFF - (temp_offset & 0xFF)) & 0xFF, 
+                                   ((len_map[max_length] + (multiplier < 16)) << 4) | mult_map[multiplier]])
+                
+                result.extend(ref_bytes)
+                
+                # Обновляем хеш-таблицу
+                for j in range(max_length):
+                    if res_len + j + 1 < len(result):
+                        key = tuple(result[res_len + j: res_len + j + 2])
+                        hash_table.setdefault(key, []).append(res_len + j)
+                
+                i += max_length
+            else:
+                result.append(data[i])
+                
+                # Обновляем хеш-таблицу для сырого байта
+                if i + 1 < data_len:
+                    key = (data[i] << 8) | data[i+1]
+                    hash_table.setdefault(key, []).append(res_len)
+                
+                i += 1
+        
+        self.log_info("Найдено ссылок: " + str(len(references)))
+        return references
     
     def decode_file(self, as_text=False):
         """Метод распаковки"""
@@ -694,9 +847,9 @@ if __name__ == "__main__":
 ФОРМАТ ССЫЛКИ (FF D9 1F) 3 байта
 
 Структура ссылки:
-    FF       D9        1F
-    ||       ||        ||-- множитель (зависит от чётности полубайта длины)
-    |        |         |-- длина сегмента
+    FF       D9                   1F
+    ||       ||                   ||-- множитель (зависит от чётности полубайта длины)
+    |        |                    |-- длина сегмента
     |        |-- остаток смещения
     |-- маркер начала ссылки
 
