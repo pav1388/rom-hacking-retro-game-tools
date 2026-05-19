@@ -7,10 +7,10 @@ import sys
 import struct
 import argparse
 import re
+import traceback
+import shutil
 from pathlib import Path
-from typing import List, Dict, Tuple, Optional, Set
 
-# Глобальные переменные для таблицы кодировки
 CHAR_TO_BYTE = {}
 BYTE_TO_CHAR = {}
 
@@ -30,7 +30,7 @@ def load_encoding_table(filename='tools/encoding_table.txt'):
     current_section = None
     
     try:
-        with open(filename, 'r', encoding='utf-8') as f:
+        with open(str(filename), 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if not line or line.startswith('#'):
@@ -45,85 +45,77 @@ def load_encoding_table(filename='tools/encoding_table.txt'):
                 
                 if '=' in line:
                     hex_byte, char = line.split('=', 1)
-                    if char:  # если символ не пустой
+                    if char:
                         byte_val = int(hex_byte, 16)
                         
-                        # Для извлечения: байт -> символ
                         if current_section in ['extract', 'both']:
                             extract_table[byte_val] = char
                         
-                        # Для обновления: символ -> байт  
                         if current_section in ['update', 'both']:
                             update_table[char] = byte_val
         
-        # Объединяем таблицы
         BYTE_TO_CHAR = extract_table
         
-        # Для обновления добавляем также латинские символы, если они не переопределены
         for byte_val, char in extract_table.items():
             if char not in update_table:
                 update_table[char] = byte_val
         
         CHAR_TO_BYTE = update_table
         
-        print(f" Загружено символов для извлечения: {len(BYTE_TO_CHAR)}")
-        print(f" Загружено символов для обновления: {len(CHAR_TO_BYTE)}")
+        print(" Загружено символов для извлечения: " + str(len(BYTE_TO_CHAR)))
+        print(" Загружено символов для обновления: " + str(len(CHAR_TO_BYTE)))
         
-        # Логируем конфликты
         conflicts = []
         for byte_val in BYTE_TO_CHAR:
             extract_char = BYTE_TO_CHAR[byte_val]
             if extract_char in CHAR_TO_BYTE and CHAR_TO_BYTE[extract_char] != byte_val:
-                conflicts.append(f"0x{byte_val:02X}: '{extract_char}' -> 0x{CHAR_TO_BYTE[extract_char]:02X}")
+                conflicts.append("0x{0:02X}: '{1}' -> 0x{2:02X}".format(byte_val, extract_char, CHAR_TO_BYTE[extract_char]))
         
         if conflicts:
-            print(" Обнаружены конфликты в таблице кодировки:")
+            print("[!] Обнаружены конфликты в таблице кодировки:")
             for conflict in conflicts:
-                print(f"   {conflict}")
+                print("   " + conflict)
         
         return True
         
     except FileNotFoundError:
-        print(f" Ошибка: файл кодировки {filename} не найден")
+        print("[!] Ошибка: файл кодировки " + filename + " не найден")
         return False
     except Exception as e:
-        print(f" Ошибка загрузки таблицы кодировки: {e}")
+        print("[!] Ошибка загрузки таблицы кодировки: " + str(e))
         return False
 
 def debug_encoding_table(filename='tools/encoding_table.txt'):
     """
     Диагностика таблицы кодировки с четким разделением на ошибки и нормальное поведение.
     """
-    print("\n" + "="*70)
-    print("🔍 ПОЛНАЯ ДИАГНОСТИКА ТАБЛИЦЫ КОДИРОВКИ")
-    print("="*70)
+    print("\n" + "=" * 30)
+    print(" ПОЛНАЯ ДИАГНОСТИКА ТАБЛИЦЫ КОДИРОВКИ")
+    print("=" * 30)
     
-    # Временные таблицы для диагностики
     extract_table = {}
     update_table = {}
     current_section = None
     
-    # Сбор информации для анализа
     section_info = []
-    duplicate_definitions = []  # КРИТИЧЕСКИЕ: дубликаты символов
-    multi_char_bytes = []       # НОРМАЛЬНЫЕ: один байт для нескольких символов
+    duplicate_definitions = []
+    multi_char_bytes = []
     line_info = []
     
     try:
-        with open(filename, 'r', encoding='utf-8') as f:
+        with open(str(filename), 'r', encoding='utf-8') as f:
             for line_num, line in enumerate(f, 1):
                 line = line.strip()
                 if not line or line.startswith('#'):
-                    # Определяем секцию по комментариям
                     if 'Латиница' in line or 'для извлечения' in line:
                         current_section = 'extract'
-                        section_info.append(f"📖 Строка {line_num}: Начало секции ИЗВЛЕЧЕНИЯ")
+                        section_info.append(" Строка {0}: Начало секции ИЗВЛЕЧЕНИЯ".format(line_num))
                     elif 'Кириллица' in line or 'для обновления' in line:
                         current_section = 'update' 
-                        section_info.append(f"📖 Строка {line_num}: Начало секции ОБНОВЛЕНИЯ")
+                        section_info.append(" Строка {0}: Начало секции ОБНОВЛЕНИЯ".format(line_num))
                     elif 'Спецсимволы' in line or 'общие' in line:
                         current_section = 'both'
-                        section_info.append(f"📖 Строка {line_num}: Начало секции ОБЩИХ СИМВОЛОВ")
+                        section_info.append(" Строка {0}: Начало секции ОБЩИХ СИМВОЛОВ".format(line_num))
                     continue
                 
                 if '=' in line:
@@ -133,37 +125,33 @@ def debug_encoding_table(filename='tools/encoding_table.txt'):
                             byte_val = int(hex_byte, 16)
                             line_info.append((line_num, byte_val, char, current_section))
                             
-                            # Для извлечения: байт -> символ
                             if current_section in ['extract', 'both']:
                                 if byte_val in extract_table:
-                                    # Дубликат байта в извлечении - КРИТИЧЕСКАЯ ОШИБКА
                                     duplicate_definitions.append(
-                                        f"❌ Строка {line_num}: Байт 0x{byte_val:02X} уже определен как '{extract_table[byte_val]}', переопределяется на '{char}'"
+                                        "[ERR] Строка {0}: Байт 0x{1:02X} уже определен как '{2}', переопределяется на '{3}'".format(
+                                        line_num, byte_val, extract_table[byte_val], char)
                                     )
                                 extract_table[byte_val] = char
                             
-                            # Для обновления: символ -> байт  
                             if current_section in ['update', 'both']:
                                 if char in update_table:
-                                    # Дубликат символа в обновлении - КРИТИЧЕСКАЯ ОШИБКА
                                     duplicate_definitions.append(
-                                        f"❌ Строка {line_num}: Символ '{char}' уже определен как 0x{update_table[char]:02X}, переопределяется на 0x{byte_val:02X}"
+                                        "[ERR] Строка {0}: Символ '{1}' уже определен как 0x{2:02X}, переопределяется на 0x{3:02X}".format(
+                                        line_num, char, update_table[char], byte_val)
                                     )
                                 update_table[char] = byte_val
                                 
                         except ValueError:
                             duplicate_definitions.append(
-                                f"❌ Строка {line_num}: Неверный hex-формат '{hex_byte}'"
+                                "[ERR] Строка {0}: Неверный hex-формат '{1}'".format(line_num, hex_byte)
                             )
         
-        # Дополняем таблицу обновления символами из извлечения
         added_from_extract = 0
         for byte_val, char in extract_table.items():
             if char not in update_table:
                 update_table[char] = byte_val
                 added_from_extract += 1
         
-        # Анализ многозначных байтов (НОРМАЛЬНОЕ поведение)
         byte_to_chars = {}
         for byte_val, char in extract_table.items():
             if byte_val not in byte_to_chars:
@@ -174,50 +162,43 @@ def debug_encoding_table(filename='tools/encoding_table.txt'):
             if len(chars) > 1:
                 multi_char_bytes.append((byte_val, chars))
         
-        # ==================== ВЫВОД РЕЗУЛЬТАТОВ ====================
+        print("\n[STATS] ОБЩАЯ СТАТИСТИКА:")
+        print("   [OK] Записей для извлечения (байт -> символ): " + str(len(extract_table)))
+        print("   [OK] Записей для обновления (символ -> байт): " + str(len(update_table)))
+        print("   [OK] Символов добавлено из извлечения: " + str(added_from_extract))
         
-        print("\n📊 ОБЩАЯ СТАТИСТИКА:")
-        print(f"   ✅ Записей для извлечения (байт -> символ): {len(extract_table)}")
-        print(f"   ✅ Записей для обновления (символ -> байт): {len(update_table)}")
-        print(f"   ✅ Символов добавлено из извлечения: {added_from_extract}")
-        
-        # СЕКЦИИ ФАЙЛА
-        print(f"\n📁 СТРУКТУРА ФАЙЛА:")
+        print("\n[STRUCT] СТРУКТУРА ФАЙЛА:")
         for info in section_info:
-            print(f"   {info}")
+            print("   " + info)
         
-        # КРИТИЧЕСКИЕ ОШИБКИ
         if duplicate_definitions:
-            print(f"\n🚨 КРИТИЧЕСКИЕ ОШИБКИ (нужно исправить):")
+            print("\n[CRIT] КРИТИЧЕСКИЕ ОШИБКИ (нужно исправить):")
             for error in duplicate_definitions:
-                print(f"   {error}")
-            print(f"\n   💡 Рекомендация: Удалите дублирующиеся строки из таблицы!")
+                print("   " + error)
+            print("\n   [TIP] Рекомендация: Удалите дублирующиеся строки из таблицы!")
         else:
-            print(f"\n✅ Критических ошибок не обнаружено")
+            print("\n[OK] Критических ошибок не обнаружено")
         
-        # НОРМАЛЬНЫЕ КОНФЛИКТЫ (многозначные байты)
         if multi_char_bytes:
-            print(f"\n🔀 НОРМАЛЬНОЕ ПОВЕДЕНИЕ (один байт → несколько символов):")
-            print(f"   💡 Это ожидаемо для кастомной кодировки игр!")
+            print("\n[NORM] НОРМАЛЬНОЕ ПОВЕДЕНИЕ (один байт -> несколько символов):")
+            print("   [TIP] Это ожидаемо для кастомной кодировки игр!")
             for byte_val, chars in multi_char_bytes:
-                print(f"   🔄 0x{byte_val:02X} → {', '.join(repr(c) for c in chars)}")
+                print("   [MAP] 0x{0:02X} -> {1}".format(byte_val, ', '.join(repr(c) for c in chars)))
         
-        # ПРОВЕРКА ОБРАТНЫХ МАППИНГОВ
-        print(f"\n🔄 ПРОВЕРКА СОГЛАСОВАННОСТИ ТАБЛИЦ:")
+        print("\n[CHECK] ПРОВЕРКА СОГЛАСОВАННОСТИ ТАБЛИЦ:")
         mapping_issues = []
         for char, byte_val in update_table.items():
             if byte_val in extract_table and extract_table[byte_val] != char:
                 mapping_issues.append((byte_val, extract_table[byte_val], char))
         
         if mapping_issues:
-            print("   💡 Ожидаемые различия (извлечение vs обновление):")
+            print("   [INFO] Ожидаемые различия (извлечение vs обновление):")
             for byte_val, extract_char, update_char in mapping_issues:
-                print(f"     0x{byte_val:02X}: '{extract_char}' (извлек.) ≠ '{update_char}' (обновл.)")
+                print("     0x{0:02X}: '{1}' (извлек.) != '{2}' (обновл.)".format(byte_val, extract_char, update_char))
         else:
-            print("   ✅ Таблицы полностью согласованы")
+            print("   [OK] Таблицы полностью согласованы")
         
-        # ТЕСТ КЛЮЧЕВЫХ СИМВОЛОВ
-        print(f"\n🧪 ТЕСТ КЛЮЧЕВЫХ ПРЕОБРАЗОВАНИЙ:")
+        print("\n[TEST] ТЕСТ КЛЮЧЕВЫХ ПРЕОБРАЗОВАНИЙ:")
         test_cases = [
             (0x41, 'A', 'А'), (0x42, 'B', 'В'),
             (0x61, 'a', 'а'), (0x62, 'b', 'в'),
@@ -231,38 +212,36 @@ def debug_encoding_table(filename='tools/encoding_table.txt'):
             latin_byte = update_table.get(latin_char, None)
             cyrillic_byte = update_table.get(cyrillic_char, None)
             
-            status_extract = "✅" if extracted != '?' else "❌"
-            status_latin = "✅" if latin_byte is not None else "❌" 
-            status_cyrillic = "✅" if cyrillic_byte is not None else "❌"
+            status_extract = "[OK]" if extracted != '?' else "[NO]"
+            status_latin = "[OK]" if latin_byte is not None else "[NO]" 
+            status_cyrillic = "[OK]" if cyrillic_byte is not None else "[NO]"
             
-            print(f"   {status_extract} Извлечение: 0x{byte_val:02X} → '{extracted}'")
+            print("   {0} Извлечение: 0x{1:02X} -> '{2}'".format(status_extract, byte_val, extracted))
             if latin_byte is not None:
-                print(f"   {status_latin} Обновление: '{latin_char}' → 0x{latin_byte:02X}")
+                print("   {0} Обновление: '{1}' -> 0x{2:02X}".format(status_latin, latin_char, latin_byte))
             if cyrillic_byte is not None:
-                print(f"   {status_cyrillic} Обновление: '{cyrillic_char}' → 0x{cyrillic_byte:02X}")
+                print("   {0} Обновление: '{1}' -> 0x{2:02X}".format(status_cyrillic, cyrillic_char, cyrillic_byte))
             
             if extracted == '?' or latin_byte is None or cyrillic_byte is None:
                 all_tests_passed = False
         
-        # ФИНАЛЬНЫЙ ВЕРДИКТ
-        print(f"\n" + "="*70)
+        print("\n" + "=" * 30)
         if not duplicate_definitions and all_tests_passed:
-            print("🎉 ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ! Таблица кодировки работает корректно.")
-            print("💡 Небольшие различия между извлечением и обновлением - это нормально!")
+            print("[PASS] ВСЕ ПРОВЕРКИ ПРОЙДЕНЫ! Таблица кодировки работает корректно.")
+            print("[TIP] Небольшие различия между извлечением и обновлением - это нормально!")
         elif duplicate_definitions:
-            print("⚠️  Обнаружены критические ошибки! Исправьте дубликаты в таблице.")
+            print("[WARN] Обнаружены критические ошибки! Исправьте дубликаты в таблице.")
         else:
-            print("⚠️  Есть проблемы с тестовыми преобразованиями. Проверьте таблицу.")
-        print("="*70)
+            print("[WARN] Есть проблемы с тестовыми преобразованиями. Проверьте таблицу.")
+        print("=" * 30)
         
         return len(duplicate_definitions) == 0
         
     except FileNotFoundError:
-        print(f"❌ Файл кодировки не найден: {filename}")
+        print("[ERR] Файл кодировки не найден: " + filename)
         return False
     except Exception as e:
-        print(f"❌ Ошибка диагностики: {e}")
-        import traceback
+        print("[ERR] Ошибка диагностики: " + str(e))
         traceback.print_exc()
         return False
 
@@ -305,12 +284,12 @@ def encode_text_to_custom(text):
             result.append(CHAR_TO_BYTE[char])
         else:
             result.append(0x3F)
-            print(f"Предупреждение: символ '{char}' (0x{ord(char):04X}) не найден в таблице кодировки")
+            print("Предупреждение: символ '{0}' (0x{1:04X}) не найден в таблице кодировки".format(char, ord(char)))
         i += 1
     
     return bytes(result)
 
-def is_valid_sentence_start(text_bytes: bytes, position: int, data: bytes) -> bool:
+def is_valid_sentence_start(text_bytes, position, data):
     """
     Проверяет, является ли позиция началом нового предложения.
     """
@@ -340,7 +319,7 @@ def is_valid_sentence_start(text_bytes: bytes, position: int, data: bytes) -> bo
     
     return False
 
-def is_valid_text_continuation(data: bytes, position: int, length: int) -> bool:
+def is_valid_text_continuation(data, position, length):
     """
     Проверяет, является ли последовательность байтов валидным текстом.
     """
@@ -370,13 +349,13 @@ def find_text_blocks_improved(filename, max_blocks=1000, min_string_length=3):
     Улучшенный поиск текстовых блоков с валидацией заголовков и поинтеров.
     """
     try:
-        with open(filename, 'rb') as f:
+        with open(str(filename), 'rb') as f:
             data = f.read()
     except FileNotFoundError:
-        print(f"Ошибка: файл {filename} не найден")
+        print("Ошибка: файл " + filename + " не найден")
         return []
     except Exception as e:
-        print(f"Ошибка чтения файла {filename}: {e}")
+        print("Ошибка чтения файла " + filename + ": " + str(e))
         return []
     
     text_blocks = []
@@ -425,8 +404,7 @@ def find_text_blocks_improved(filename, max_blocks=1000, min_string_length=3):
     
     return text_blocks
 
-def analyze_potential_block(data: bytes, start_pos: int, data_len: int, 
-                          printable_bytes: bytes, min_length: int) -> Optional[Dict]:
+def analyze_potential_block(data, start_pos, data_len, printable_bytes, min_length):
     """
     Анализирует потенциальный текстовый блок с заголовком.
     """
@@ -467,7 +445,7 @@ def analyze_potential_block(data: bytes, start_pos: int, data_len: int,
     
     return block_info
 
-def find_possible_header(data: bytes, text_start: int, data_len: int) -> Optional[Tuple[int, List]]:
+def find_possible_header(data, text_start, data_len):
     """
     Ищет возможный заголовок с поинтерами перед текстовым блоком.
     """
@@ -491,7 +469,7 @@ def find_possible_header(data: bytes, text_start: int, data_len: int) -> Optiona
     
     return header_start, pointers
 
-def find_block_separator(data: bytes, text_start: int, search_range: int = 512) -> Optional[int]:
+def find_block_separator(data, text_start, search_range = 512):
     """
     Ищет разделитель блоков (0x000000) перед указанной позицией.
     """
@@ -503,8 +481,7 @@ def find_block_separator(data: bytes, text_start: int, search_range: int = 512) 
     
     return None
 
-def analyze_header_pointers(data: bytes, header_start: int, text_start: int, 
-                          header_size: int) -> List[Tuple[int, int]]:
+def analyze_header_pointers(data, header_start, text_start, header_size):
     """
     Анализирует поинтеры в заголовке и возвращает валидные.
     """
@@ -529,9 +506,8 @@ def analyze_header_pointers(data: bytes, header_start: int, text_start: int,
     
     return pointers
 
-def analyze_text_block_content(data: bytes, start_pos: int, data_len: int,
-                             printable_bytes: bytes, min_length: int,
-                             pointers: List, header_start: int) -> Optional[Dict]:
+def analyze_text_block_content(data, start_pos, data_len, printable_bytes, min_length,
+                                pointers, header_start):
     """
     Анализирует содержимое текстового блока.
     """
@@ -606,8 +582,7 @@ def analyze_text_block_content(data: bytes, start_pos: int, data_len: int,
         'string_count': len(strings)
     }
 
-def analyze_simple_text_block(data: bytes, start_pos: int, data_len: int,
-                            printable_bytes: bytes, min_length: int) -> Optional[Dict]:
+def analyze_simple_text_block(data, start_pos, data_len, printable_bytes, min_length):
     """
     Анализирует простой текстовый блок без заголовка.
     """
@@ -675,7 +650,7 @@ def analyze_simple_text_block(data: bytes, start_pos: int, data_len: int,
         'validated': True
     }
 
-def filter_duplicate_blocks(blocks: List[Dict]) -> List[Dict]:
+def filter_duplicate_blocks(blocks):
     """
     Фильтрует дублирующиеся и вложенные блоки.
     """
@@ -705,7 +680,7 @@ def filter_duplicate_blocks(blocks: List[Dict]) -> List[Dict]:
     
     return filtered_blocks
 
-def validate_pointers_and_strings(block_info: Dict, pointers: List, header_start: int) -> bool:
+def validate_pointers_and_strings(block_info, pointers, header_start):
     """
     Проверяет соответствие поинтеров и строк в блоке.
     """
@@ -727,10 +702,10 @@ def validate_pointers_and_strings(block_info: Dict, pointers: List, header_start
 def extract_text_from_file(filename, block_info):
     """Извлекает текст из блока файла (оригинальный английский)."""
     try:
-        with open(filename, 'rb') as f:
+        with open(str(filename), 'rb') as f:
             data = f.read()
     except Exception as e:
-        print(f"Ошибка чтения файла: {e}")
+        print("Ошибка чтения файла: " + str(e))
         return []
     
     extracted_strings = []
@@ -785,7 +760,7 @@ def extract_text_from_file(filename, block_info):
             extracted_strings.append(text)
             
         except Exception as e:
-            extracted_strings.append(f"[Ошибка декодирования: {e}]")
+            extracted_strings.append("[Ошибка декодирования: " + str(e) + "]")
     
     return extracted_strings
 
@@ -793,18 +768,21 @@ def save_text_blocks_to_file(input_filename, blocks, output_filename):
     """
     Сохраняет найденные текстовые блоки в файл с улучшенным форматом.
     """
-    with open(output_filename, 'w', encoding='utf-8') as f:
-        f.write(f"# Файл: {input_filename}\n")
-        f.write(f"# Блоки: {len(blocks)}\n")
-        f.write(f"# Формат: BLOCK_NUM|HEADER_START|TEXT_START|BLOCK_END|STRING_COUNT|HAS_HEADER|VALIDATED\n")
-        f.write(f"# Формат строки: STRING|TRANSLATE|ADDRESS|POINTER_VALUE|HAS_POINTER\n")
-        f.write(f"# Escape-последовательности: \\0 (нулевой байт), \\t (таб), \\n (новая строка), \\r (возврат каретки)\n\n")
+    with open(str(output_filename), 'w', encoding='utf-8') as f:
+        f.write("# Файл: " + input_filename + "\n")
+        f.write("# Блоки: " + str(len(blocks)) + "\n")
+        f.write("# Формат: BLOCK_NUM|HEADER_START|TEXT_START|BLOCK_END|STRING_COUNT|HAS_HEADER|VALIDATED\n")
+        f.write("# Формат строки: STRING|TRANSLATE|ADDRESS|POINTER_VALUE|HAS_POINTER\n")
+        f.write("# Escape-последовательности: \\0 (нулевой байт), \\t (таб), \\n (новая строка), \\r (возврат каретки)\n\n")
         
         for i, block in enumerate(blocks):
-            f.write(f"### BLOCK {i:04d} ###\n")
-            f.write(f"BLOCK_HEADER: {i:04d}|0x{block['header_start']:08X}|0x{block['text_start']:08X}|0x{block['block_end']:08X}|{block['string_count']}|{int(block['has_header'])}|{int(block.get('validated', False))}\n")
-            f.write(f"# SIZES: HEADER={block['header_size']} TEXT={block['text_size']} TOTAL={block['total_size']}\n")
-            f.write(f"# POINTERS: {len(block['pointers'])}\n")
+            f.write("### BLOCK {0:04d} ###\n".format(i))
+            f.write("BLOCK_HEADER: {0:04d}|0x{1:08X}|0x{2:08X}|0x{3:08X}|{4}|{5}|{6}\n".format(
+                i, block['header_start'], block['text_start'], block['block_end'],
+                block['string_count'], int(block['has_header']), int(block.get('validated', False))))
+            f.write("# SIZES: HEADER={0} TEXT={1} TOTAL={2}\n".format(
+                block['header_size'], block['text_size'], block['total_size']))
+            f.write("# POINTERS: " + str(len(block['pointers'])) + "\n")
             
             # Извлекаем текст для этого блока
             strings_text = extract_text_from_file(input_filename, block)
@@ -816,13 +794,12 @@ def save_text_blocks_to_file(input_filename, blocks, output_filename):
                 
                 # УБИРАЕМ лишнее экранирование - оставляем как есть
                 # text уже содержит правильные escape-последовательности: \n, \t, \r, \0
-                
-                f.write(f"STRING: {text}\n")
-                f.write(f"TRANSLATE: \n")
-                f.write(f"METADATA: 0x{string_addr:08X}|0x{pointer_val:04X}|{int(has_pointer)}\n")
-                f.write(f"END_STRING\n\n")
+                f.write("STRING: " + text + "\n")
+                f.write("TRANSLATE: \n")
+                f.write("METADATA: 0x{0:08X}|0x{1:04X}|{2}\n".format(string_addr, pointer_val, int(has_pointer)))
+                f.write("END_STRING\n\n")
             
-            f.write(f"END_BLOCK\n\n")
+            f.write("END_BLOCK\n\n")
 
 def parse_text_blocks_file(filename):
     """
@@ -831,10 +808,10 @@ def parse_text_blocks_file(filename):
     blocks = {}
     
     try:
-        with open(filename, 'r', encoding='utf-8') as f:
+        with open(str(filename), 'r', encoding='utf-8') as f:
             content = f.read()
     except Exception as e:
-        print(f"Ошибка чтения файла {filename}: {e}")
+        print("Ошибка чтения файла " + filename + ": " + str(e))
         return blocks
     
     current_block = None
@@ -912,7 +889,7 @@ def update_file_with_translation(original_filename, blocks_data, output_filename
     Обновляет файл переведенным текстом, корректируя поинтеры.
     """
     if block_num not in blocks_data:
-        print(f"Ошибка: блок {block_num} не найден")
+        print("Ошибка: блок " + str(block_num) + " не найден")
         return False
 
     # Загружаем таблицу кодировки
@@ -927,10 +904,10 @@ def update_file_with_translation(original_filename, blocks_data, output_filename
 
     try:
         # Читаем исходный файл
-        with open(original_filename, 'rb') as f:
+        with open(str(original_filename), 'rb') as f:
             original_data = bytearray(f.read())
     except Exception as e:
-        print(f"Ошибка чтения исходного файла: {e}")
+        print("Ошибка чтения исходного файла: " + str(e))
         return False
 
     # Создаем новую версию данных
@@ -950,7 +927,7 @@ def update_file_with_translation(original_filename, blocks_data, output_filename
             # Проверка на пустой перевод
             if not text_to_use.strip():
                 text_to_use = string_info['original']
-                print(f"  Предупреждение: для строки по адресу 0x{string_info['address']:08X} перевод пустой, используется оригинал")
+                print("  Предупреждение: для строки по адресу 0x{0:08X} перевод пустой, используется оригинал".format(string_info['address']))
         else:
             text_to_use = string_info['original']
 
@@ -973,38 +950,40 @@ def update_file_with_translation(original_filename, blocks_data, output_filename
             
             if not is_last_string:
                 string_bytes += b'\x00'
-                print(f"  Строка {string_index:2d}/{(total_strings-1):2d}: 0x{old_string_addr:08X} -> 0x{current_text_pos:08X} ({len(string_bytes)} байт) +0x00")
+                print("  Строка {0:2d}/{1:2d}: 0x{2:08X} -> 0x{3:08X} ({4} байт) +0x00".format(
+                    string_index, total_strings-1, old_string_addr, current_text_pos, len(string_bytes)))
             else:
-                print(f"  Строка {string_index:2d}/{(total_strings-1):2d}: 0x{old_string_addr:08X} -> 0x{current_text_pos:08X} ({len(string_bytes)} байт) [последняя]")
+                print("  Строка {0:2d}/{1:2d}: 0x{2:08X} -> 0x{3:08X} ({4} байт) [последняя]".format(
+                    string_index, total_strings-1, old_string_addr, current_text_pos, len(string_bytes)))
 
             new_strings_data.append((old_string_addr, string_bytes, is_last_string))
             current_text_pos += len(string_bytes)
 
         except Exception as e:
-            print(f"Ошибка обработки строки по адресу 0x{old_string_addr:08X}: {e}")
+            print("Ошибка обработки строки по адресу 0x{0:08X}: {1}".format(old_string_addr, str(e)))
             return False
 
     # Вычисляем новый размер текстового блока
     total_new_text_size = current_text_pos - text_start
     original_text_size = original_block_end - text_start
 
-    print(f"Размер текстового блока: {total_new_text_size}/{original_text_size} байт")
+    print("Размер текстового блока: {0}/{1} байт".format(total_new_text_size, original_text_size))
 
     # Проверяем размер нового текстового блока
     if total_new_text_size > original_text_size:
-        print(f"ОШИБКА: Новый текстовый блок больше оригинального!")
-        print(f"Превышение на: {total_new_text_size - original_text_size} байт")
+        print("ОШИБКА: Новый текстовый блок больше оригинального!")
+        print("Превышение на: {0} байт".format(total_new_text_size - original_text_size))
         
-        # Детальная диагностика
         print("\nДИАГНОСТИКА:")
-        print(f"Начало текста: 0x{text_start:08X}")
-        print(f"Конец текста (оригинал): 0x{original_block_end:08X}")
-        print(f"Конец текста (новый): 0x{current_text_pos:08X}")
+        print("Начало текста: 0x{0:08X}".format(text_start))
+        print("Конец текста (оригинал): 0x{0:08X}".format(original_block_end))
+        print("Конец текста (новый): 0x{0:08X}".format(current_text_pos))
         
         # Покажем размеры каждой строки
         current_pos = text_start
         for i, (old_addr, string_bytes, is_last) in enumerate(new_strings_data):
-            print(f"Строка {i:2d}: 0x{current_pos:08X}-0x{current_pos + len(string_bytes):08X} ({len(string_bytes)} байт) {'[последняя]' if is_last else ''}")
+            print("Строка {0:2d}: 0x{1:08X}-0x{2:08X} ({3} байт) {4}".format(
+                i, current_pos, current_pos + len(string_bytes), len(string_bytes), '[последняя]' if is_last else ''))
             current_pos += len(string_bytes)
         
         print("Обновление отменено.")
@@ -1022,14 +1001,14 @@ def update_file_with_translation(original_filename, blocks_data, output_filename
     # Дополняем оставшееся пространство нулями если новый блок меньше
     if current_text_pos < original_block_end:
         fill_bytes = original_block_end - current_text_pos
-        print(f"Дополнение нулями: {fill_bytes} байт (0x{current_text_pos:08X}-0x{original_block_end:08X})")
+        print("Дополнение нулями: {0} байт (0x{1:08X}-0x{2:08X})".format(fill_bytes, current_text_pos, original_block_end))
         for i in range(current_text_pos, original_block_end):
             new_data[i] = 0x00
     elif current_text_pos == original_block_end:
         print("Размер блока совпадает с оригиналом")
     else:
         # Этого не должно случиться, т.к. мы проверили размер выше
-        print(f"КРИТИЧЕСКАЯ ОШИБКА: current_text_pos ({current_text_pos}) > original_block_end ({original_block_end})")
+        print("КРИТИЧЕСКАЯ ОШИБКА: current_text_pos ({0}) > original_block_end ({1})".format(current_text_pos, original_block_end))
         return False
 
     # Обновляем поинтеры в заголовке если есть заголовок
@@ -1038,10 +1017,10 @@ def update_file_with_translation(original_filename, blocks_data, output_filename
 
         # Восстанавливаем оригинальные позиции поинтеров из файла
         try:
-            with open(original_filename, 'rb') as f:
+            with open(str(original_filename), 'rb') as f:
                 original_file_data = f.read()
         except Exception as e:
-            print(f"Ошибка чтения оригинального файла для восстановления поинтеров: {e}")
+            print("Ошибка чтения оригинального файла для восстановления поинтеров: " + str(e))
             return False
 
         # Находим позиции поинтеров в оригинальном файле
@@ -1062,21 +1041,21 @@ def update_file_with_translation(original_filename, blocks_data, output_filename
                                 # Записываем новый поинтер
                                 new_data[pos] = new_pointer & 0xFF
                                 new_data[pos + 1] = (new_pointer >> 8) & 0xFF
-                                print(f"  Поинтер 0x{pos:08X}: 0x{old_pointer:04X} -> 0x{new_pointer:04X}")
+                                print("  Поинтер 0x{0:08X}: 0x{1:04X} -> 0x{2:04X}".format(pos, old_pointer, new_pointer))
                             break
 
     # Записываем обновленный файл
     try:
-        with open(output_filename, 'wb') as f:
+        with open(str(output_filename), 'wb') as f:
             f.write(new_data)
-        print(f" Файл успешно обновлен: {output_filename}")
-        print(f" Обновлено строк: {len(new_strings_data)}")
+        print("[+] Файл успешно обновлен: " + output_filename)
+        print("[+] Обновлено строк: " + str(len(new_strings_data)))
         if has_header:
             updated_pointers = len([p for p in block['pointers'] if p != 0xFFFF])
-            print(f" Обновлено поинтеров: {updated_pointers}")
+            print("[+] Обновлено поинтеров: " + str(updated_pointers))
         return True
     except Exception as e:
-        print(f"Ошибка записи файла: {e}")
+        print("Ошибка записи файла: " + str(e))
         return False
 
 def update_all_blocks_in_file(original_filename, translation_filename, output_filename=None, use_translate=True):
@@ -1089,24 +1068,23 @@ def update_all_blocks_in_file(original_filename, translation_filename, output_fi
     # Парсим файл перевода
     blocks_data = parse_text_blocks_file(translation_filename)
     if not blocks_data:
-        print(" Не удалось загрузить данные блоков из файла перевода")
+        print("[!] Не удалось загрузить данные блоков из файла перевода")
         return False
 
-    print(f" Загружено блоков: {len(blocks_data)}")
+    print("[+] Загружено блоков: " + str(len(blocks_data)))
 
     # Создаем резервную копию
     backup_file = original_filename + '.bak'
     if not os.path.exists(backup_file):
-        import shutil
         shutil.copy2(original_filename, backup_file)
-        print(f" Создана резервная копия: {backup_file}")
+        print("[+] Создана резервная копия: " + backup_file)
 
     # Обновляем все блоки
     success_count = 0
     total_blocks = len(blocks_data)
 
     for block_num in range(total_blocks):
-        print(f" Обновление блока {block_num}...")
+        print("[+] Обновление блока " + str(block_num) + "...")
 
         success = update_file_with_translation(
             original_filename=original_filename,
@@ -1118,11 +1096,11 @@ def update_all_blocks_in_file(original_filename, translation_filename, output_fi
 
         if success:
             success_count += 1
-            print(f" Блок {block_num} успешно обновлен")
+            print("[+] Блок " + str(block_num) + " успешно обновлен")
         else:
-            print(f" Ошибка при обновлении блока {block_num}")
+            print("[!] Ошибка при обновлении блока " + str(block_num))
 
-    print(f" Итог: успешно обновлено {success_count}/{total_blocks} блоков")
+    print("[+] Итог: успешно обновлено {0}/{1} блоков".format(success_count, total_blocks))
     return success_count > 0
 
 
@@ -1136,7 +1114,7 @@ def find_text_in_folder(folder_path, max_blocks=1000, min_length=3):
     total_blocks = 0
     total_strings = 0
 
-    print(f" Поиск текстовых блоков в {total_files} файлах...")
+    print("[+] Поиск текстовых блоков в " + str(total_files) + " файлах...")
 
     for file_path in bin_files:
         processed_files += 1
@@ -1152,7 +1130,7 @@ def find_text_in_folder(folder_path, max_blocks=1000, min_length=3):
 
         output_file = str(file_path.with_name(file_path.stem + "-text.txt"))
 
-        print(f" [{processed_files}/{total_files}] Обработка {file_type}: {file_path.name}")
+        print("[{0}/{1}] Обработка {2}: {3}".format(processed_files, total_files, file_type, file_path.name))
 
         try:
             blocks = find_text_blocks_improved(input_file, max_blocks, min_length)
@@ -1163,17 +1141,17 @@ def find_text_in_folder(folder_path, max_blocks=1000, min_length=3):
                 total_blocks += file_blocks
                 total_strings += file_strings
 
-                print(f"    Найдено: {file_blocks} блоков, {file_strings} строк -> {Path(output_file).name}")
+                print("    Найдено: {0} блоков, {1} строк -> {2}".format(file_blocks, file_strings, Path(output_file).name))
             else:
-                print(f"    Текстовые блоки не найдены")
+                print("    Текстовые блоки не найдены")
 
         except Exception as e:
-            print(f"   ️ Ошибка при обработке: {e}")
+            print("   [!] Ошибка при обработке: " + str(e))
 
-    print(f"\n ПОИСК ЗАВЕРШЕН:")
-    print(f"   Обработано файлов: {processed_files}/{total_files}")
-    print(f"   Найдено блоков: {total_blocks}")
-    print(f"   Найдено строк: {total_strings}")
+    print("\n[+] ПОИСК ЗАВЕРШЕН:")
+    print("   Обработано файлов: {0}/{1}".format(processed_files, total_files))
+    print("   Найдено блоков: " + str(total_blocks))
+    print("   Найдено строк: " + str(total_strings))
 
     return {
         'processed_files': processed_files,
@@ -1228,13 +1206,13 @@ def main():
     
     try:
         if args.command == 'find':
-            print(f"Улучшенный поиск текстовых блоков в файле: {args.input}")
+            print("Улучшенный поиск текстовых блоков в файле: " + args.input)
             blocks = find_text_blocks_improved(args.input, args.max_blocks, args.min_length)
-            print(f"Найдено блоков: {len(blocks)}")
+            print("Найдено блоков: " + str(len(blocks)))
             
             if blocks:
                 save_text_blocks_to_file(args.input, blocks, args.output)
-                print(f"Блоки сохранены в: {args.output}")
+                print("Блоки сохранены в: " + args.output)
                 
                 # Детальная статистика
                 blocks_with_headers = sum(1 for b in blocks if b['has_header'])
@@ -1242,15 +1220,15 @@ def main():
                 total_strings = sum(block['string_count'] for block in blocks)
                 total_pointers = sum(len(block['pointers']) for block in blocks)
                 
-                print(f"Блоков с заголовками: {blocks_with_headers}/{len(blocks)}")
-                print(f"Валидированных блоков: {validated_blocks}/{len(blocks)}")
-                print(f"Всего строк: {total_strings}")
-                print(f"Всего поинтеров: {total_pointers}")
+                print("Блоков с заголовками: {0}/{1}".format(blocks_with_headers, len(blocks)))
+                print("Валидированных блоков: {0}/{1}".format(validated_blocks, len(blocks)))
+                print("Всего строк: " + str(total_strings))
+                print("Всего поинтеров: " + str(total_pointers))
             else:
                 print("Текстовые блоки не найдены")
         
         elif args.command == 'update':
-            print(f"Обновление файла {args.input} блоком {args.block}")
+            print("Обновление файла " + args.input + " блоком " + str(args.block))
             blocks_data = parse_text_blocks_file(args.translation)
             
             if not blocks_data:
@@ -1266,8 +1244,7 @@ def main():
                 print("Файл успешно обновлен")
         
     except Exception as e:
-        print(f"Ошибка: {e}")
-        import traceback
+        print("Ошибка: " + str(e))
         traceback.print_exc()
 
 if __name__ == "__main__":

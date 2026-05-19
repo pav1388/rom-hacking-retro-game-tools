@@ -5,8 +5,10 @@ import os
 import sys
 import struct
 import shutil
+import time
+import warnings
 from pathlib import Path
-
+from itertools import repeat
 """
 A fairly straight port of Haruhiko Okumura's LZSS codec from C.
 Nothing really clever, and not very pythonic.  (I'm not that good at this honestly.)
@@ -30,8 +32,6 @@ def encode(data, ring, limit, threshold, idx, fill, byteorder, condition=True):
     """
     output = bytearray()
     if not data: return output
-
-    from itertools import repeat
 
     # Initialize the ring buffer with a common fill value.
     if isinstance(fill, (bytes, bytearray)):
@@ -215,7 +215,6 @@ def decode(data, out_sz, ring, threshold, idx, fill, byteorder, bitorder='bottom
     output, buffer = bytearray(), bytearray(ring)
     # set up ring buffer
     if fill:
-        from itertools import repeat
         if isinstance(fill, str):
             fill = fill.encode()
         if isinstance(fill, (bytes, bytearray)):
@@ -279,7 +278,6 @@ def decode(data, out_sz, ring, threshold, idx, fill, byteorder, bitorder='bottom
             if out_sz<=len(output):
                 break
     except IndexError:
-        import warnings
         warnings.warn("\tError!  Insufficient data.\n  Probably not an LZSS file.\n")
         return bytes()
     except StopIteration as E:
@@ -390,11 +388,6 @@ def split(file_name=None, output_dir="extracted", folder_path=None):
         output_dir: Папка для извлеченных файлов
         folder_path: Путь к папке для обработки всех архивов (режим папки)
     """
-    import struct
-    import time
-    import os
-    from pathlib import Path
-    
     print("\nНачало извлечения ... ")
     start_time = time.time()
     
@@ -407,10 +400,10 @@ def split(file_name=None, output_dir="extracted", folder_path=None):
             # РЕЖИМ ПАПКИ: обработка всех файлов в указанной папке
             folder = Path(folder_path)
             if not folder.exists() or not folder.is_dir():
-                raise FileNotFoundError(f"Папка '{folder_path}' не существует")
+                raise FileNotFoundError("Папка '" + folder_path + "' не существует")
             
-            print(f"Обработка всех файлов в папке: {folder_path}")
-            print("=" * 80)
+            print("Обработка всех файлов в папке: " + folder_path)
+            print("=" * 30)
             
             total_archives_processed = 0
             total_files_extracted = 0
@@ -421,31 +414,32 @@ def split(file_name=None, output_dir="extracted", folder_path=None):
                     try:
                         # Создаем подпапку для каждого файла архива
                         base_name = file_path.stem
-                        file_output_dir = Path(output_dir) / f"{base_name}-extracted"
-                        file_output_dir.mkdir(parents=True, exist_ok=True)
+                        file_output_dir = Path(output_dir) / (base_name + "-extracted")
+                        if not file_output_dir.exists():
+                            file_output_dir.mkdir(parents=True)
                         
-                        print(f"\nОбработка архива: {file_path.name}")
+                        print("\nОбработка архива: " + file_path.name)
                         files_extracted = split_single_file(str(file_path), str(file_output_dir))
                         
                         total_archives_processed += 1
                         total_files_extracted += files_extracted
                         
-                        print(f"✓ Извлечено {files_extracted} файлов из {file_path.name}")
+                        print("[+] Извлечено " + str(files_extracted) + " файлов из " + file_path.name)
                         
                     except Exception as e:
-                        print(f"✗ Ошибка при обработке файла {file_path.name}: {e}")
+                        print("[!] Ошибка при обработке файла " + file_path.name + ": " + str(e))
                         continue
             
             # Выводим итоговую статистику
-            print("\n" + "=" * 40)
+            print("\n" + "=" * 30)
             print("ИТОГИ ИЗВЛЕЧЕНИЯ:")
-            print("=" * 40)
-            print(f"Обработано архивов: {total_archives_processed}")
-            print(f"Всего извлечено файлов: {total_files_extracted}")
+            print("=" * 30)
+            print("Обработано архивов: " + str(total_archives_processed))
+            print("Всего извлечено файлов: " + str(total_files_extracted))
             
             end_time = time.time()
             total_time = end_time - start_time
-            print(f"Общее время выполнения: {total_time:.2f} секунд")
+            print("Общее время выполнения: {0:.2f} секунд".format(total_time))
             
             return total_files_extracted
             
@@ -453,48 +447,45 @@ def split(file_name=None, output_dir="extracted", folder_path=None):
             # РЕЖИМ ОДНОГО ФАЙЛА: извлечение из одного архива
             file_path = Path(file_name)
             if not file_path.exists() or not file_path.is_file():
-                raise FileNotFoundError(f"Файл '{file_name}' не существует")
+                raise FileNotFoundError("Файл '" + file_name + "' не существует")
             
-            print(f"Обработка архива: {file_name}")
+            print("Обработка архива: " + file_name)
             output_path = Path(output_dir)
-            output_path.mkdir(parents=True, exist_ok=True)
+            if not output_path.exists():
+                output_path.mkdir(parents=True)
             
             files_extracted = split_single_file(file_name, output_dir)
             
             end_time = time.time()
             total_time = end_time - start_time
             
-            print("\n" + "=" * 40)
+            print("\n" + "=" * 30)
             print("ИТОГИ ИЗВЛЕЧЕНИЯ:")
-            print("=" * 40)
-            print(f"Извлечено файлов: {files_extracted}")
-            print(f"Время выполнения: {total_time:.2f} секунд")
+            print("=" * 30)
+            print("Извлечено файлов: " + str(files_extracted))
+            print("Время выполнения: {0:.2f} секунд".format(total_time))
             
             return files_extracted
             
     except Exception as e:
-        print(f"Критическая ошибка: {e}")
+        print("Критическая ошибка: " + str(e))
         return 0
 
 
 def split_single_file(file_name, output_dir):
     """Вспомогательная функция для обработки одного файла архива"""
-    import struct
-    import time
-    import os
-    from pathlib import Path
-    
     start_time = time.time()
     
     # Создаем папку для извлеченных файлов
     output_path = Path(output_dir)
-    output_path.mkdir(parents=True, exist_ok=True)
+    if not output_path.exists():
+        output_path.mkdir(parents=True)
     
-    with open(file_name, 'rb') as f:  
+    with open(str(file_name), 'rb') as f:  
         src = f.read()
     
     file_size = len(src)
-    print(f"Размер файла: {file_size} байт")
+    print("Размер файла: " + str(file_size) + " байт")
     
     # Предварительный подсчет количества файлов
     total_files = 0
@@ -511,7 +502,7 @@ def split_single_file(file_name, output_dir):
             total_files += 1
         temp_index += 1
     
-    print(f"Найдено файлов для извлечения: {total_files}")
+    print("Найдено файлов для извлечения: " + str(total_files))
     
     if total_files == 0:
         print("Файлы для извлечения не найдены!")
@@ -546,8 +537,8 @@ def split_single_file(file_name, output_dir):
         extracted_data = src[data_offset:data_offset+data_size]
         
         # Сохраняем с правильным именем
-        output_filename = output_path / f"file_{index:04d}.bin"
-        with open(output_filename, 'wb') as f: 
+        output_filename = output_path / ("file_{0:04d}.bin".format(index))
+        with open(str(output_filename), 'wb') as f: 
             f.write(extracted_data)
         
         files_extracted += 1
@@ -555,7 +546,7 @@ def split_single_file(file_name, output_dir):
         # Вывод прогресса
         percent = (files_extracted * 100) // total_files
         if percent != last_percent:
-            print(f"Прогресс: {percent}% ({files_extracted}/{total_files}) - файл {index:04d}, размер: {data_size} байт")
+            print("Прогресс: {0}% ({1}/{2}) - файл {3:04d}, размер: {4} байт".format(percent, files_extracted, total_files, index, data_size))
             last_percent = percent
         
         index += 1
@@ -572,15 +563,13 @@ def build(input_dir, output_file="EPICA.bin", alignment=0x800, verify=False, det
         output_file: Имя выходного файла архива
         alignment: Выравнивание между файлами (0x800 = 2048 байт)
     """
-    import time
-    
-    print(f"Сборка файла {output_file} ...")
+    print("Сборка файла " + output_file + " ...")
     start_time = time.time()
     
     # Получаем список файлов в папке
     input_path = Path(input_dir)
     if not input_path.exists():
-        raise FileNotFoundError(f"Папка '{input_dir}' не найдена")
+        raise FileNotFoundError("Папка '" + input_dir + "' не найдена")
 
     # Шаг 2: Ищем файлы в формате file_XXXX.bin для сборки архива
     file_pattern = "file_*.bin"
@@ -592,9 +581,9 @@ def build(input_dir, output_file="EPICA.bin", alignment=0x800, verify=False, det
         # files = sorted(input_path.glob(file_pattern))
         
     if not files:
-        raise FileNotFoundError(f"В папке '{input_dir}' не найдены файлы .bin для сборки архива")
+        raise FileNotFoundError("В папке '" + input_dir + "' не найдены файлы .bin для сборки архива")
     
-    print(f"Найдено частей для сборки: {len(files)}")
+    print("Найдено частей для сборки: " + str(len(files)))
     
     # Собираем данные файлов
     file_data = []
@@ -602,23 +591,23 @@ def build(input_dir, output_file="EPICA.bin", alignment=0x800, verify=False, det
     
     # Читаем все файлы
     for file_path in files:
-        with open(file_path, 'rb') as f:
+        with open(str(file_path), 'rb') as f:
             data = f.read()
         file_data.append(data)
         file_sizes.append(len(data))
         if detailed:
-            print(f"Прочитан файл {file_path.name}, размер: {len(data)} байт")
+            print("Прочитан файл " + file_path.name + ", размер: " + str(len(data)) + " байт")
     
     # Вычисляем размер таблицы содержания (8 байт на файл + 8 байт нулевая запись в конце)
     toc_size = (len(files) + 1) * 8
-    print(f"Размер таблицы содержания: {toc_size} байт")
+    print("Размер таблицы содержания: " + str(toc_size) + " байт")
     
     # Первый файл начинается с 0x1800
     first_file_offset = 0x1800
     
     # Проверяем, что таблица содержания помещается до 0x1800
     if toc_size > first_file_offset:
-        raise ValueError(f"Таблица содержания слишком большая ({toc_size} байт) для смещения 0x{first_file_offset:X}")
+        raise ValueError("Таблица содержания слишком большая (" + str(toc_size) + " байт) для смещения 0x{0:X}".format(first_file_offset))
     
     # Вычисляем смещения для данных файлов
     current_offset = first_file_offset
@@ -635,7 +624,7 @@ def build(input_dir, output_file="EPICA.bin", alignment=0x800, verify=False, det
     
     # print(f"Первый файл начинается с: 0x{first_file_offset:08X}")
     # print(f"Общий размер данных с выравниванием: {current_offset - first_file_offset} байт")
-    print(f"Общий размер файла: {current_offset} байт")
+    print("Общий размер файла: " + str(current_offset) + " байт")
     
     # Собираем архив
     archive_data = bytearray()
@@ -647,7 +636,7 @@ def build(input_dir, output_file="EPICA.bin", alignment=0x800, verify=False, det
         toc_entry = struct.pack("<LL", data_offset, data_size)
         archive_data.extend(toc_entry)
         if detailed:
-            print(f"Таблица: файл {i:04d} -> смещение=0x{data_offset:08X}, размер={data_size} байт")
+            print("Таблица: файл {0:04d} -> смещение=0x{1:08X}, размер={2} байт".format(i, data_offset, data_size))
     
     # Добавляем нулевую запись в конец таблицы
     archive_data.extend(struct.pack("<LL", 0, 0))
@@ -658,7 +647,7 @@ def build(input_dir, output_file="EPICA.bin", alignment=0x800, verify=False, det
         padding_size = first_file_offset - current_pos
         archive_data.extend(b'\x00' * padding_size)
         if detailed:
-            print(f"Заполнение до 0x{first_file_offset:08X}: {padding_size} байт нулей")
+            print("Заполнение до 0x{0:08X}: {1} байт нулей".format(first_file_offset, padding_size))
     
     # 3. Записываем данные файлов с выравниванием
     for i, data in enumerate(file_data):
@@ -667,20 +656,20 @@ def build(input_dir, output_file="EPICA.bin", alignment=0x800, verify=False, det
         
         # Проверяем текущую позицию
         if current_pos != expected_pos:
-            print(f"Ошибка: текущая позиция 0x{current_pos:08X}, ожидалась 0x{expected_pos:08X}")
+            print("Ошибка: текущая позиция 0x{0:08X}, ожидалась 0x{1:08X}".format(current_pos, expected_pos))
             # Добавляем выравнивание если нужно
             if current_pos < expected_pos:
                 padding_size = expected_pos - current_pos
                 archive_data.extend(b'\x00' * padding_size)
                 if detailed:
-                    print(f"Выравнивание перед файлом {i:04d}: {padding_size} байт")
+                    print("Выравнивание перед файлом {0:04d}: {1} байт".format(i, padding_size))
             else:
-                raise ValueError(f"Переполнение: текущая позиция 0x{current_pos:08X} > ожидаемой 0x{expected_pos:08X}")
+                raise ValueError("Переполнение: текущая позиция 0x{0:08X} > ожидаемой 0x{1:08X}".format(current_pos, expected_pos))
         
         # Записываем данные файла
         archive_data.extend(data)
         if detailed:
-            print(f"Файл {i:04d}: записан по смещению 0x{aligned_offsets[i]:08X}, размер={len(data)} байт")
+            print("Файл {0:04d}: записан по смещению 0x{1:08X}, размер={2} байт".format(i, aligned_offsets[i], len(data)))
         
         # Добавляем выравнивание после файла (кроме последнего)
         if i < len(file_data) - 1:
@@ -690,24 +679,24 @@ def build(input_dir, output_file="EPICA.bin", alignment=0x800, verify=False, det
             if padding_size > 0:
                 archive_data.extend(b'\x00' * padding_size)
                 if detailed:
-                    print(f"Выравнивание после файла {i:04d}: {padding_size} байт")
+                    print("Выравнивание после файла {0:04d}: {1} байт".format(i, padding_size))
     
     # Записываем архив в файл
-    with open(output_file, 'wb') as f:
+    with open(str(output_file), 'wb') as f:
         f.write(archive_data)
     
     print('=' * 50)
-    print(f"\nФайл успешно собран: {output_file}")
+    print("\nФайл успешно собран: " + output_file)
     if detailed:
-        print(f"Размер таблицы содержания: {toc_size} байт")
-        print(f"Первый файл начинается с: 0x{first_file_offset:08X}")
-        print(f"Количество файлов: {len(files)}")
-        print(f"Общий размер данных: {sum(file_sizes)} байт")
-        print(f"Общий размер архива: {len(archive_data)} байт")
-        print(f"Размер выравнивания: {len(archive_data) - sum(file_sizes) - first_file_offset} байт")
+        print("Размер таблицы содержания: " + str(toc_size) + " байт")
+        print("Первый файл начинается с: 0x{0:08X}".format(first_file_offset))
+        print("Количество файлов: " + str(len(files)))
+        print("Общий размер данных: " + str(sum(file_sizes)) + " байт")
+        print("Общий размер архива: " + str(len(archive_data)) + " байт")
+        print("Размер выравнивания: " + str(len(archive_data) - sum(file_sizes) - first_file_offset) + " байт")
     
     end_time = time.time()
-    print(f"Время выполнения: {end_time - start_time:.2f} секунд")
+    print("Время выполнения: {0:.2f} секунд".format(end_time - start_time))
         
     # Проверяем целостность
     if verify:
@@ -720,9 +709,9 @@ def verify_pack(file_name, expected_files):
     Проверяет целостность созданного файла
     """
     print('=' * 50)
-    print(f"\nПроверка целостности сборки файла: {file_name}")
+    print("\nПроверка целостности сборки файла: " + file_name)
     
-    with open(file_name, 'rb') as f:
+    with open(str(file_name), 'rb') as f:
         src = f.read()
     
     # Проверяем таблицу содержания
@@ -745,11 +734,11 @@ def verify_pack(file_name, expected_files):
             files_found += 1
             # print(f" Запись {index:04d}: смещение=0x{data_offset:08X}, размер={data_size} байт - OK")
         else:
-            print(f" Запись {index:04d}: смещение=0x{data_offset:08X}, размер={data_size} байт - ERROR")
+            print(" Запись {0:04d}: смещение=0x{1:08X}, размер={2} байт - ERROR".format(index, data_offset, data_size))
         
         index += 1
     
-    print(f"Проверено записей: {files_found} (ожидалось: {expected_files})")
+    print("Проверено записей: {0} (ожидалось: {1})".format(files_found, expected_files))
     
     if files_found == expected_files:
         print(" Целостность архива подтверждена")
@@ -758,43 +747,43 @@ def verify_pack(file_name, expected_files):
 
 # Общий блок сигнатур для использования в разных функциях
 LZSS_SIGNATURES = {
-    b'\x82\x18\xBB\xC1': "LZSS-archive",	# 8218BBC1 
-    b'\x0A\x10\xBB\xC0': "LZSS-archive",	# 0A10BBC0 
-    b'\x4A\x10\xBB\xC0': "LZSS-archive",	# 4A10BBC0 
-    b'\x82\x06\xBB\xC0': "LZSS-archive",	# 8206BBC0 
-    b'\x0A\x41\xB7\xC4': "LZSS-archive",	# 0A41B7C4 
-    b'\x2A\x06\xBB\xC0': "LZSS-archive",	# 2A06BBC0 
-    b'\x00\x03\x00\x88': "LZSS-archive",	# 00030088 
-    b'\x00\x58\x00\x58': "LZSS-archive",	# 00580058 
-    b'\x02\x03\xBB\xC0': "LZSS-archive",	# 0203BBC0 
-    b'\x82\x03\xBB\xC0': "LZSS-archive",	# 8203BBC0 
-    b'\x02\x28\xBB\xC0': "LZSS-archive",	# 0228BBC0 
-    b'\x02\x2C\xBB\xC0': "LZSS-archive",	# 022CBBC0 
-    b'\x02\x20\xBB\xC0': "LZSS-archive",	# 0220BBC0 
-    b'\x02\x30\xBB\xC0': "LZSS-archive",	# 0230BBC0 
-    b'\x02\x40\xBB\xC0': "LZSS-archive",	# 0240BBC0 
-    b'\x12\x24\xBB\xC0': "LZSS-archive",	# 1224BBC0 
-    b'\x02\x34\xBB\xC0': "LZSS-archive",	# 0234BBC0 
-    b'\x02\x38\xBB\xC0': "LZSS-archive",	# 0238BBC0 
-    b'\x02\x3C\xBB\xC0': "LZSS-archive",	# 023CBBC0 
-    b'\x02\x1C\xBB\xC0': "LZSS-archive",	# 021CBBC0 
-    b'\x02\x24\xBB\xC0': "LZSS-archive",	# 0224BBC0 
-    b'\x02\x28\xBB\xC1': "LZSS-archive",	# 0228BBC1 
-    b'\x02\x28\xBA\xC1': "LZSS-archive",	# 0228BAC1 
-    b'\x02\x44\xBB\xC0': "LZSS-archive",	# 0244BBC0 
-    b'\x02\x40\xBA\xC1': "LZSS-archive",	# 0240BAC1 
-    b'\x02\x30\xBA\xC1': "LZSS-archive",	# 0230BAC1 
-    b'\x12\x2C\xBB\xC0': "LZSS-archive",	# 122CBBC0 
-    b'\x02\x14\xBB\xC0': "LZSS-archive",	# 0214BBC0 
-    b'\x0A\x14\xBB\xC0': "LZSS-archive",	# 0A14BBC0 
-    b'\x02\x14\xBB\xC1': "LZSS-archive",	# 0214BBC1 
-    b'\x02\x14\xBA\xC1': "LZSS-archive",	# 0214BAC1 
-    b'\x2A\x14\xBB\xC0': "LZSS-archive",	# 2A14BBC0 
-    b'\x4A\x14\xBB\xC0': "LZSS-archive",	# 4A14BBC0 
-    b'\x12\x14\xBB\xC0': "LZSS-archive",	# 1214BBC0 
-    b'\x0A\x24\xBB\xC0': "LZSS-archive",	# 0A24BBC0 
-    b'\x4A\x24\xBB\xC0': "LZSS-archive",	# 4A24BBC0 
-    b'\x2A\x24\xBB\xC0': "LZSS-archive",	# 2A24BBC0
+    b'\x82\x18\xBB\xC1': "LZSS-archive",    # 8218BBC1 
+    b'\x0A\x10\xBB\xC0': "LZSS-archive",    # 0A10BBC0 
+    b'\x4A\x10\xBB\xC0': "LZSS-archive",    # 4A10BBC0 
+    b'\x82\x06\xBB\xC0': "LZSS-archive",    # 8206BBC0 
+    b'\x0A\x41\xB7\xC4': "LZSS-archive",    # 0A41B7C4 
+    b'\x2A\x06\xBB\xC0': "LZSS-archive",    # 2A06BBC0 
+    b'\x00\x03\x00\x88': "LZSS-archive",    # 00030088 
+    b'\x00\x58\x00\x58': "LZSS-archive",    # 00580058 
+    b'\x02\x03\xBB\xC0': "LZSS-archive",    # 0203BBC0 
+    b'\x82\x03\xBB\xC0': "LZSS-archive",    # 8203BBC0 
+    b'\x02\x28\xBB\xC0': "LZSS-archive",    # 0228BBC0 
+    b'\x02\x2C\xBB\xC0': "LZSS-archive",    # 022CBBC0 
+    b'\x02\x20\xBB\xC0': "LZSS-archive",    # 0220BBC0 
+    b'\x02\x30\xBB\xC0': "LZSS-archive",    # 0230BBC0 
+    b'\x02\x40\xBB\xC0': "LZSS-archive",    # 0240BBC0 
+    b'\x12\x24\xBB\xC0': "LZSS-archive",    # 1224BBC0 
+    b'\x02\x34\xBB\xC0': "LZSS-archive",    # 0234BBC0 
+    b'\x02\x38\xBB\xC0': "LZSS-archive",    # 0238BBC0 
+    b'\x02\x3C\xBB\xC0': "LZSS-archive",    # 023CBBC0 
+    b'\x02\x1C\xBB\xC0': "LZSS-archive",    # 021CBBC0 
+    b'\x02\x24\xBB\xC0': "LZSS-archive",    # 0224BBC0 
+    b'\x02\x28\xBB\xC1': "LZSS-archive",    # 0228BBC1 
+    b'\x02\x28\xBA\xC1': "LZSS-archive",    # 0228BAC1 
+    b'\x02\x44\xBB\xC0': "LZSS-archive",    # 0244BBC0 
+    b'\x02\x40\xBA\xC1': "LZSS-archive",    # 0240BAC1 
+    b'\x02\x30\xBA\xC1': "LZSS-archive",    # 0230BAC1 
+    b'\x12\x2C\xBB\xC0': "LZSS-archive",    # 122CBBC0 
+    b'\x02\x14\xBB\xC0': "LZSS-archive",    # 0214BBC0 
+    b'\x0A\x14\xBB\xC0': "LZSS-archive",    # 0A14BBC0 
+    b'\x02\x14\xBB\xC1': "LZSS-archive",    # 0214BBC1 
+    b'\x02\x14\xBA\xC1': "LZSS-archive",    # 0214BAC1 
+    b'\x2A\x14\xBB\xC0': "LZSS-archive",    # 2A14BBC0 
+    b'\x4A\x14\xBB\xC0': "LZSS-archive",    # 4A14BBC0 
+    b'\x12\x14\xBB\xC0': "LZSS-archive",    # 1214BBC0 
+    b'\x0A\x24\xBB\xC0': "LZSS-archive",    # 0A24BBC0 
+    b'\x4A\x24\xBB\xC0': "LZSS-archive",    # 4A24BBC0 
+    b'\x2A\x24\xBB\xC0': "LZSS-archive",    # 2A24BBC0
 }
 
 IMAGE_SIGNATURES = {
@@ -822,15 +811,13 @@ def analyze(file_name="EPICA.bin", output_file=None, folder_path=None):
         output_file: Файл для сохранения отчета
         folder_path: Путь к папке для анализа (если указан - режим папки)
     """
-    import sys
-    import time
+    
     
     # Cигнатуры файлов
-    signatures = {
-        **LZSS_SIGNATURES,
-        **IMAGE_SIGNATURES,
-        **OTHER_SIGNATURES,
-    }
+    signatures = {}
+    signatures.update(LZSS_SIGNATURES)
+    signatures.update(IMAGE_SIGNATURES)
+    signatures.update(OTHER_SIGNATURES)
     
     print("\nНачало анализа ... ")
     start_time = time.time()
@@ -845,10 +832,10 @@ def analyze(file_name="EPICA.bin", output_file=None, folder_path=None):
             # РЕЖИМ ПАПКИ: анализ всех файлов в указанной папке
             folder = Path(folder_path)
             if not folder.exists() or not folder.is_dir():
-                print(f"Ошибка: Папка '{folder_path}' не существует")
+                print("Ошибка: Папка '" + folder_path + "' не существует")
                 return
             
-            print(f"Анализ всех файлов в папке: {folder_path}")
+            print("Анализ всех файлов в папке: " + folder_path)
             print("=" * 87)
             print("|Имя файла               |Сигнатура                |Первые 16 байт                    |")
             print("-" * 87)
@@ -864,7 +851,7 @@ def analyze(file_name="EPICA.bin", output_file=None, folder_path=None):
                     file_type = "unknown"
                     
                     try:
-                        with open(file_path, 'rb') as f:
+                        with open(str(file_path), 'rb') as f:
                             file_header = f.read(16)  # Читаем первые 16 байт для проверки сигнатур
                         
                         # Проверяем все сигнатуры
@@ -879,11 +866,11 @@ def analyze(file_name="EPICA.bin", output_file=None, folder_path=None):
                             first_4_bytes = file_header[:4]
                             for sig_bytes, sig_name in signatures.items():
                                 if len(sig_bytes) >= 4 and first_4_bytes == sig_bytes[:4]:
-                                    file_type = f"partial_{sig_name}"
+                                    file_type = "partial_" + sig_name
                                     break
                     
                     except Exception as e:
-                        file_type = f"error_reading"
+                        file_type = "error_reading"
                     
                     # Обновляем статистику
                     if file_type not in file_types_count:
@@ -892,13 +879,13 @@ def analyze(file_name="EPICA.bin", output_file=None, folder_path=None):
                     
                     # Форматируем первые 16 байт для вывода
                     try:
-                        with open(file_path, 'rb') as f:
+                        with open(str(file_path), 'rb') as f:
                             first_16_data = f.read(16)
                         
                         hex_groups = []
                         for i in range(0, len(first_16_data), 4):
                             group = first_16_data[i:i+4]
-                            hex_group = ''.join(f'{b:02X}' for b in group)
+                            hex_group = ''.join('{0:02X}'.format(b) for b in group)
                             hex_groups.append(hex_group)
                         first_16_bytes = ' '.join(hex_groups)
                         
@@ -906,31 +893,31 @@ def analyze(file_name="EPICA.bin", output_file=None, folder_path=None):
                         first_16_bytes = "Ошибка чтения"
                     
                     # Выводим информацию о файле
-                    print(f"{file_path.name:<25} {file_type:<25} {first_16_bytes}")
+                    print("{0:<25} {1:<25} {2}".format(file_path.name, file_type, first_16_bytes))
             
             # Выводим статистику
-            print("\n" + "=" * 80)
+            print("\n" + "=" * 30)
             print("СТАТИСТИКА ПО ТИПАМ ФАЙЛОВ:")
-            print("=" * 80)
-            print(f"Всего файлов в папке: {total_files}")
-            print("-" * 80)
+            print("=" * 30)
+            print("Всего файлов в папке: " + str(total_files))
+            print("-" * 30)
             
             # Сортируем по количеству файлов
             for file_type, count in sorted(file_types_count.items(), key=lambda x: x[1], reverse=True):
                 percentage = (count / total_files) * 100 if total_files > 0 else 0
-                print(f"{file_type:<30} {count:4d} файлов ({percentage:5.1f}%)")
+                print("{0:<30} {1:4d} файлов ({2:5.1f}%)".format(file_type, count, percentage))
             
             return file_types_count
             
         else:
             # РЕЖИМ ОДНОГО ФАЙЛА: оригинальная логика анализа архива
-            print(f"Анализ структуры: {file_name}")
+            print("Анализ структуры: " + file_name)
             
-            with open(file_name, 'rb') as f:
+            with open(str(file_name), 'rb') as f:
                 src = f.read()
             
             file_size = len(src)
-            print(f"Размер файла: {file_size} байт (0x{file_size:08X})")
+            print("Размер файла: {0} байт (0x{1:08X})".format(file_size, file_size))
             
             # Анализируем записи таблицы содержания
             index = 0
@@ -950,7 +937,7 @@ def analyze(file_name="EPICA.bin", output_file=None, folder_path=None):
                 files_info.append((index, data_offset, data_size))
                 index += 1
             
-            print(f"Найдено записей в таблицы содержания: {len(files_info)}")
+            print("Найдено записей в таблицы содержания: " + str(len(files_info)))
             
             # Анализируем структуру данных с проверкой сигнатур
             if files_info:
@@ -977,7 +964,7 @@ def analyze(file_name="EPICA.bin", output_file=None, folder_path=None):
                         hex_groups = []
                         for i in range(0, len(first_16_data), 4):
                             group = first_16_data[i:i+4]
-                            hex_group = ''.join(f'{b:02X}' for b in group)
+                            hex_group = ''.join('{0:02X}'.format(b) for b in group)
                             hex_groups.append(hex_group)
                         first_16_bytes = ' '.join(hex_groups)
                         
@@ -993,7 +980,7 @@ def analyze(file_name="EPICA.bin", output_file=None, folder_path=None):
                             first_4_bytes = file_header[:4]
                             for sig_bytes, sig_name in signatures.items():
                                 if len(sig_bytes) >= 4 and first_4_bytes == sig_bytes[:4]:
-                                    file_type = f"partial_{sig_name}"
+                                    file_type = "partial_" + sig_name
                                     break
                     else:
                         # Если файл слишком маленький для чтения 16 байт
@@ -1004,13 +991,13 @@ def analyze(file_name="EPICA.bin", output_file=None, folder_path=None):
                             hex_groups = []
                             for i in range(0, len(first_16_data), 4):
                                 group = first_16_data[i:i+4]
-                                hex_group = ''.join(f'{b:02X}' for b in group)
+                                hex_group = ''.join('{0:02X}'.format(b) for b in group)
                                 hex_groups.append(hex_group)
                             first_16_bytes = ' '.join(hex_groups)
                             first_16_bytes += ' ' * (23 - len(first_16_bytes))  # Выравнивание
                         file_type = "too_small"
                     
-                    print(f"{idx:04d}:  0x{offset:08X}-0x{end_pos:08X}  {size:6d} байт   {alignment:>8}   {file_type:<23} {first_16_bytes}")
+                    print("{0:04d}:  0x{1:08X}-0x{2:08X}  {3:6d} байт   {4:>8}   {5:<23} {6}".format(idx, offset, end_pos, size, alignment, file_type, first_16_bytes))
                 
                 # Статистика по типам файлов
                 print("\n" + "=" * 110)
@@ -1034,7 +1021,7 @@ def analyze(file_name="EPICA.bin", output_file=None, folder_path=None):
                 # Сортируем по количеству файлов
                 for file_type, count in sorted(file_types_count.items(), key=lambda x: x[1], reverse=True):
                     percentage = (count / len(files_info)) * 100
-                    print(f"{file_type:<25} {count:4d} файлов ({percentage:5.1f}%)")
+                    print("{0:<25} {1:4d} файлов ({2:5.1f}%)".format(file_type, count, percentage))
                         
             return files_info
             
@@ -1044,17 +1031,17 @@ def analyze(file_name="EPICA.bin", output_file=None, folder_path=None):
             sys.stdout.close()
             sys.stdout = original_stdout
         
-        print(f"\nАнализ завершен. Отчет: {output_file}")
+        print("\nАнализ завершен. Отчет: " + output_file)
         end_time = time.time()
-        print(f"Время выполнения: {end_time - start_time:.2f} секунд")
+        print("Время выполнения: {0:.2f} секунд".format(end_time - start_time))
 
 def read_first_n_bytes(folder_path, n_bytes, output_file):
     """Обрабатывает все файлы в указанной папке"""
     try:
-        with open(output_file, 'w', encoding='utf-8') as out_file:
+        with open(str(output_file), 'w', encoding='utf-8') as out_file:
             # Получаем список файлов в папке
-            out_file.write(f"Анализ папки: {folder_path}\n")
-            out_file.write(f"Предпросмотр первых {n_bytes} байт каждого файла\n\n\n")
+            out_file.write("Анализ папки: " + folder_path + "\n")
+            out_file.write("Предпросмотр первых " + str(n_bytes) + " байт каждого файла\n\n\n")
             
             file_count = 0
             for filename in os.listdir(folder_path):
@@ -1064,7 +1051,7 @@ def read_first_n_bytes(folder_path, n_bytes, output_file):
                 if os.path.isfile(file_path):
                     """Читает первые n_bytes байт файла и возвращает в требуемом формате"""
                     try:
-                        with open(file_path, 'rb') as file:
+                        with open(str(file_path), 'rb') as file:
                             first_n_bytes = file.read(n_bytes)
                             
                             # Если файл меньше n_bytes байт, дополняем нулями
@@ -1078,26 +1065,26 @@ def read_first_n_bytes(folder_path, n_bytes, output_file):
                             
                             # Форматируем байты в hex строку
                             formatted_bytes = ' '.join(
-                                ''.join(f'{b:02X}' for b in group) for group in bytes_groups
+                                ''.join('{0:02X}'.format(b) for b in group) for group in bytes_groups
                             )
                             
                     except Exception as e:
-                        return f"Ошибка чтения: {str(e)}"
+                        return "Ошибка чтения: " + str(e)
                     
-                    out_file.write(f"{filename}: {formatted_bytes}\n")
-                    print(f"Обработан: {filename}")
+                    out_file.write(filename + ": " + formatted_bytes + "\n")
+                    print("Обработан: " + filename)
                     file_count += 1
             
             if file_count == 0:
                 print("В указанной папке нет файлов для обработки!")
                 out_file.write("В указанной папке нет файлов для обработки!\n")
             else:
-                print(f"\nОбработано файлов: {file_count}")
+                print("\nОбработано файлов: " + str(file_count))
                     
-        print(f"Результаты сохранены в файл: {output_file}")
+        print("Результаты сохранены в файл: " + output_file)
         
     except Exception as e:
-        print(f"Ошибка при обработке папки: {str(e)}")
+        print("Ошибка при обработке папки: " + str(e))
 
 def unpack_lzss(input_file=None, output_file=None, unpack_all=False, search_folder=None):
     """
@@ -1109,9 +1096,6 @@ def unpack_lzss(input_file=None, output_file=None, unpack_all=False, search_fold
         unpack_all: Если True - распаковывает все файлы по сигнатурам, если False - один указанный файл
         search_folder: Папка для поиска файлов по сигнатурам (используется только при unpack_all=True)
     """
-    import time
-    from pathlib import Path
-    
     start_time = time.time()
     
     if unpack_all:
@@ -1124,29 +1108,29 @@ def unpack_lzss(input_file=None, output_file=None, unpack_all=False, search_fold
         
         # Проверяем существование папки
         if not input_path.exists():
-            print(f"Ошибка: Папка {input_path} не существует")
+            print("Ошибка: Папка " + str(input_path) + " не существует")
             return
         
         processed_files = 0
         
-        print(f"Поиск файлов с известными сигнатурами в папке: {input_path}")
-        print(f"Всего LZSS сигнатур в базе: {len(LZSS_SIGNATURES)}")
+        print("Поиск файлов с известными сигнатурами в папке: " + str(input_path))
+        print("Всего LZSS сигнатур в базе: " + str(len(LZSS_SIGNATURES)))
         print("-" * 50)
         
         # Проходим по всем файлам в папке
         for file_path in input_path.iterdir():
             if file_path.is_file():
                 try:
-                    with open(file_path, 'rb') as f:
+                    with open(str(file_path), 'rb') as f:
                         first_bytes = f.read(4)  # Читаем первые 4 байта
                     
                     # Проверяем совпадение с любым из шаблонов
                     if first_bytes in LZSS_SIGNATURES:
-                        signature_hex = ''.join(f'{b:02X}' for b in first_bytes)
+                        signature_hex = ''.join('{0:02X}'.format(b) for b in first_bytes)
                         # print(f"Найдена сигнатура {signature_hex} в файле: {file_path.name}")
                         
                         # Читаем весь файл
-                        with open(file_path, 'rb') as f:
+                        with open(str(file_path), 'rb') as f:
                             file_data = f.read()
                         
                         # Декодируем файл
@@ -1156,23 +1140,23 @@ def unpack_lzss(input_file=None, output_file=None, unpack_all=False, search_fold
                             
                             # Сохраняем распакованный файл
                             output_path = file_path.with_suffix('.lzss-dec')
-                            with open(output_path, 'wb') as f:
+                            with open(str(output_path), 'wb') as f:
                                 f.write(decoded_data)
 
-                            print(f" Файл {file_path.name} распакован в {output_path.name}")
+                            print("[+] Файл " + file_path.name + " распакован в " + output_path.name)
                             # print(f"    Исходный: {original_size} байт, распакованный: {len(decoded_data)} байт")
                             processed_files += 1
                                 
                         except Exception as e:
-                            print(f"   Ошибка декодирования {file_path.name}: {e}")
+                            print("   Ошибка декодирования " + file_path.name + ": " + str(e))
                             
                 except Exception as e:
-                    print(f"Ошибка обработки файла {file_path.name}: {e}")
+                    print("Ошибка обработки файла " + file_path.name + ": " + str(e))
         
         print("-" * 50)
-        print(f"Распаковано файлов: {processed_files}")
+        print("Распаковано файлов: " + str(processed_files))
         end_time = time.time()
-        print(f"Время выполнения: {end_time - start_time:.2f} секунд")
+        print("Время выполнения: {0:.2f} секунд".format(end_time - start_time))
         return processed_files
         
     else:
@@ -1180,26 +1164,26 @@ def unpack_lzss(input_file=None, output_file=None, unpack_all=False, search_fold
         try:
             input_path = Path(input_file)
             if not input_path.exists():
-                print(f"Ошибка: Файл {input_file} не существует")
+                print("Ошибка: Файл " + input_file + " не существует")
                 return
                 
-            with open(input_file, 'rb') as f:
+            with open(str(input_file), 'rb') as f:
                 data = f.read()
             
             # Пропускаем проверку сигнатур для одного файла и сразу декодируем
             decompressed_data = decode1KB(data)
             
-            with open(output_file, 'wb') as f:
+            with open(str(output_file), 'wb') as f:
                 f.write(decompressed_data)
             
-            print(f"Файл успешно распакован: {input_file} -> {output_file}")
-            print(f"Исходный размер: {len(data)} байт")
-            print(f"Распакованный размер: {len(decompressed_data)} байт")
+            print("Файл успешно распакован: " + input_file + " -> " + output_file)
+            print("Исходный размер: " + str(len(data)) + " байт")
+            print("Распакованный размер: " + str(len(decompressed_data)) + " байт")
             end_time = time.time()
-            print(f"Время выполнения: {end_time - start_time:.2f} секунд")
+            print("Время выполнения: {0:.2f} секунд".format(end_time - start_time))
             
         except Exception as e:
-            print(f"Ошибка распаковки: {e}")
+            print("Ошибка распаковки: " + str(e))
 
 def repack_lzss(input_file, output_file, compress_all=False, search_folder=None):
     """
@@ -1211,9 +1195,6 @@ def repack_lzss(input_file, output_file, compress_all=False, search_folder=None)
         compress_all: Если True - сжимает все файлы *.lzss-dec, если False - один указанный файл
         search_folder: Папка для поиска файлов *.lzss-dec (используется только при compress_all=True)
     """
-    import time
-    from pathlib import Path
-    
     start_time = time.time()
     
     if compress_all:
@@ -1226,23 +1207,23 @@ def repack_lzss(input_file, output_file, compress_all=False, search_folder=None)
         
         # Проверяем существование папки
         if not input_path.exists():
-            print(f"Ошибка: Папка {input_path} не существует")
+            print("Ошибка: Папка " + str(input_path) + " не существует")
             return
         
         # Ищем файлы *.lzss-dec и кодируем их в *.bin
         unpack_files = sorted(input_path.glob("*.lzss-dec"))
         if not unpack_files:
-            print(f"Файлы .lzss-dec не найдены в папке {input_path}")
+            print("Файлы .lzss-dec не найдены в папке " + str(input_path))
             return
         
         total_files = len(unpack_files)
-        print(f"Найдено {total_files} файлов .lzss-dec для кодирования")
+        print("Найдено " + str(total_files) + " файлов .lzss-dec для кодирования")
         
 
         for i, unpack_file in enumerate(unpack_files):
             try:
                 # Читаем распакованные данные
-                with open(unpack_file, 'rb') as f:
+                with open(str(unpack_file), 'rb') as f:
                     unpacked_data = f.read()
                 
                 # Кодируем обратно в сжатый формат
@@ -1252,50 +1233,47 @@ def repack_lzss(input_file, output_file, compress_all=False, search_folder=None)
                 bin_file = unpack_file.with_suffix('.bin')
                 
                 # Сохраняем закодированные данные
-                with open(bin_file, 'wb') as f:
+                with open(str(bin_file), 'wb') as f:
                     f.write(encoded_data)
                 
                 # Расчет прогресса в процентах
                 progress = (i + 1) / total_files * 100
                 
-                print(f"Сжат: {unpack_file.name} -> {bin_file.name} "
-                      # f"({len(unpacked_data)} -> {len(encoded_data)} байт) "
-                      f"[{i + 1}/{total_files} - {progress:.1f}%]")
+                print("Сжат: {0} -> {1} [{2}/{3} - {4:.1f}%]".format(unpack_file.name, bin_file.name, i + 1, total_files, progress))
                       
             except Exception as e:
                 # Расчет прогресса в процентах при ошибке
                 progress = (i + 1) / total_files * 100
-                print(f"Ошибка кодирования {unpack_file.name}: {e} "
-                      f"[{i + 1}/{total_files} - {progress:.1f}%]")
+                print("Ошибка кодирования {0}: {1} [{2}/{3} - {4:.1f}%]".format(unpack_file.name, str(e), i + 1, total_files, progress))
         
         end_time = time.time()
-        print(f"Время выполнения: {end_time - start_time:.2f} секунд")
+        print("Время выполнения: {0:.2f} секунд".format(end_time - start_time))
         
     else:
         # Режим сжатия одного файла
         try:
             input_path = Path(input_file)
             if not input_path.exists():
-                print(f"Ошибка: Файл {input_file} не существует")
+                print("Ошибка: Файл " + input_file + " не существует")
                 return
                 
-            with open(input_file, 'rb') as f:
+            with open(str(input_file), 'rb') as f:
                 data = f.read()
             
             compressed_data = encode1KB(data)
             
-            with open(output_file, 'wb') as f:
+            with open(str(output_file), 'wb') as f:
                 f.write(compressed_data)
             
-            print(f"Файл успешно упакован: {input_file} -> {output_file}")
-            print(f"Исходный размер: {len(data)} байт")
-            print(f"Сжатый размер: {len(compressed_data)} байт")
-            print(f"Коэффициент сжатия: {len(compressed_data)/len(data)*100:.1f}%")
+            print("Файл успешно упакован: " + input_file + " -> " + output_file)
+            print("Исходный размер: " + str(len(data)) + " байт")
+            print("Сжатый размер: " + str(len(compressed_data)) + " байт")
+            print("Коэффициент сжатия: {0:.1f}%".format(len(compressed_data)/len(data)*100))
             end_time = time.time()
-            print(f"Время выполнения: {end_time - start_time:.2f} секунд")
+            print("Время выполнения: {0:.2f} секунд".format(end_time - start_time))
             
         except Exception as e:
-            print(f"Ошибка упаковки: {e}")
+            print("Ошибка упаковки: " + str(e))
 
 def main():
     parser = argparse.ArgumentParser(
@@ -1464,10 +1442,10 @@ def main():
                 repack_lzss(args.input, args.output, compress_all=False)
                 
     except FileNotFoundError as e:
-        print(f"Ошибка: {e}")
+        print("Ошибка: " + str(e))
         sys.exit(1)
     except Exception as e:
-        print(f"Ошибка: {e}")
+        print("Ошибка: " + str(e))
         sys.exit(1)
 
 if __name__ == "__main__":
